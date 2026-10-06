@@ -1,0 +1,82 @@
+{
+  "schema": "lozenge_bezier_anim",
+  "schema_version": 2,
+  "fps": 30,
+  "resolution": [1920, 1080],
+  "units": "pixels",
+  "objects": {
+    "p0:leg:R:thigh": {
+      "person_id": 0,
+      "body": "leg",
+      "side": "R",
+      "segment": "thigh",
+      "skeleton_edge": [12, 10],
+      "closed": true,
+      "point_count": 3,
+      "visibility": {"0": 1, "1": 1},
+      "frames": {
+        "0": {
+          "points": [
+            {"x": 100.0, "y": 200.0, "left_x": 95.0, "left_y": 200.0, "right_x": 105.0, "right_y": 200.0},
+            {"x": 200.0, "y": 300.0, "left_x": 195.0, "left_y": 300.0, "right_x": 205.0, "right_y": 300.0},
+            {"x": 100.0, "y": 400.0, "left_x": 95.0, "left_y": 400.0, "right_x": 105.0, "right_y": 400.0}
+          ]
+        },
+        "1": {
+          "points": [
+            {"x": 101.0, "y": 201.0, "left_x": 96.0, "left_y": 201.0, "right_x": 106.0, "right_y": 201.0},
+            {"x": 201.0, "y": 301.0, "left_x": 196.0, "left_y": 301.0, "right_x": 206.0, "right_y": 301.0},
+            {"x": 101.0, "y": 401.0, "left_x": 96.0, "left_y": 401.0, "right_x": 106.0, "right_y": 401.0}
+          ]
+        }
+      }
+    },
+    "p0:hand:R:B_index_tip": {
+      "person_id": 0,
+      "body": "hand",
+      "side": "R",
+      "segment": "B_index_tip",
+      "skeleton_edge": [20, 21],
+      "closed": true,
+      "point_count": 3,
+      "visibility": {"0": 1, "1": 1},
+      "frames": {
+        "0": {
+          "points": [
+            {"x": 500.0, "y": 500.0, "left_x": 495.0, "left_y": 500.0, "right_x": 505.0, "right_y": 500.0},
+            {"x": 520.0, "y": 500.0, "left_x": 515.0, "left_y": 500.0, "right_x": 525.0, "right_y": 500.0},
+            {"x": 510.0, "y": 520.0, "left_x": 505.0, "left_y": 520.0, "right_x": 515.0, "right_y": 520.0}
+          ]
+        },
+        "1": {
+          "points": [
+            {"x": 501.0, "y": 501.0, "left_x": 496.0, "left_y": 501.0, "right_x": 506.0, "right_y": 501.0},
+            {"x": 521.0, "y": 501.0, "left_x": 516.0, "left_y": 501.0, "right_x": 526.0, "right_y": 501.0},
+            {"x": 511.0, "y": 521.0, "left_x": 506.0, "left_y": 521.0, "right_x": 516.0, "right_y": 521.0}
+          ]
+        }
+      }
+    },
+    "p1:leg:L:shin": {
+      "person_id": 1,
+      "body": "leg",
+      "side": "L",
+      "segment": "shin",
+      "skeleton_edge": [14, 16],
+      "closed": true,
+      "point_count": 3,
+      "visibility": {"0": 1, "1": 1},
+      "frames": {
+        "0": {
+          "points": [
+            {"x": 1000.0, "y": 500.0, "left_x": 995.0, "left_y": 500.0, "right_x": 1005.0, "right_y": 500.0},
+            {"x": 1050.0, "y": 600.0, "left_x": 1045.0, "left_y": 600.0, "right_x": 1055.0, "right_y": 600.0},
+            {"x": 1000.0, "y": 700.0, "left_x": 995.0, "left_y": 700.0, "right_x": 1005.0, "right_y": 700.0}
+          ]
+        }
+      }
+    }
+  },
+  "width": 1920,
+  "height": 1080
+}

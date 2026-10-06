@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rotobot-nuke"
+version = "0.1.0"
+description = "Import Rotobot-Next lozenge_bezier_anim JSON into The Foundry's Nuke as a Roto node."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Sam Hodge", email = "sam.hodge@gmail.com" }]
+keywords = ["nuke", "rotobot", "roto", "vfx", "bezier", "spline"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://tokgan.com"
+Source = "https://github.com/samhodge-tokgan/rotobot-nuke"
+Issues = "https://github.com/samhodge-tokgan/rotobot-nuke/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rotobot_nuke = ["py.typed"]
