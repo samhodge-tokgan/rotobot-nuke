@@ -20,6 +20,27 @@ The algorithm is a direct port of the ``key_reduction`` branch of
 MIT-licensed, re-shaped to operate on :class:`LozengeDoc` in memory
 rather than file-to-file.
 
+Two call shapes are supported on :func:`undersample_doc`:
+
+    Legacy single-pass (PR #1 behaviour) — one bone-local RDP per object
+    governed by a single ``tolerance`` kwarg. Useful for v2 JSONs and for
+    quick sanity checks.
+
+    Hierarchical composed-tolerance (issue #279) — three sequential RDP
+    passes:
+
+      1. camera reference frame over :attr:`LozengeDoc.camera`
+      2. person root pose over :attr:`LozengeDoc.persons`
+      3. articulation (bone-local with per-frame pelvis subtracted) per
+         object
+
+    Each pass gates its own tolerance. The final kept frames per object
+    are the **union** of the three passes' retained frames, intersected
+    with the object's own frame set — so a frame is kept whenever the
+    camera, the person root, or the articulation changed enough to
+    warrant a keyframe, and dropped only when all three agree the frame
+    is linearly interpolable.
+
 Requirements:
     Each object must carry per-frame ``bone`` endpoints (schema v2 writer
     output). Objects without ``bone`` are left untouched — RDP needs an
@@ -33,9 +54,16 @@ import json
 import math
 from dataclasses import replace
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, NamedTuple, Optional, Sequence, Tuple
 
-from .reader import LozengeDoc, LozengeFrame, LozengeObject, LozengePoint
+from .reader import (
+    CameraFrame,
+    LozengeDoc,
+    LozengeFrame,
+    LozengeObject,
+    LozengePoint,
+    PersonFrame,
+)
 
 # Tolerance presets, picked from a wedge sweep across four real UHD/HD
 # Rotobot-Next outputs (1.1 MB → 57.9 MB; 126 → 8198 keyframes). Units
@@ -51,6 +79,26 @@ TOLERANCE_AGGRESSIVE = 10.0    # ~75% kept; faster scrubs, keyframes
 TOLERANCE_VERY_AGGRESSIVE = 25.0  # 45–80% kept; artist review needed
 
 DEFAULT_TOLERANCE = TOLERANCE_BALANCED
+
+
+# Composed-tolerance presets for the hierarchical path (issue #279). Each
+# number is in state-vector units for its own pass: ``camera_tolerance`` in
+# camera-space metres + unitless matrix cells; ``person_tolerance`` mixes
+# metres (cam_t) + pixels (pelvis_px); ``articulation_tolerance`` is
+# pixel-equivalent in the bone-local frame after pelvis subtraction.
+class TolerancePreset(NamedTuple):
+    camera_tolerance: float
+    person_tolerance: float
+    articulation_tolerance: float
+
+
+PRESET_COARSE = TolerancePreset(2.0, 4.0, 1.0)
+PRESET_BALANCED = TolerancePreset(1.0, 2.0, 0.4)
+PRESET_FINE = TolerancePreset(0.5, 1.0, 0.15)
+
+DEFAULT_CAMERA_TOLERANCE = PRESET_BALANCED.camera_tolerance
+DEFAULT_PERSON_TOLERANCE = PRESET_BALANCED.person_tolerance
+DEFAULT_ARTICULATION_TOLERANCE = PRESET_BALANCED.articulation_tolerance
 
 
 def rdp_reduction(points: Sequence[Sequence[float]], tolerance: float) -> List[int]:
@@ -114,12 +162,23 @@ def rdp_reduction(points: Sequence[Sequence[float]], tolerance: float) -> List[i
     return [0, len(points) - 1]
 
 
-def _state_vector_for_frame(frame: LozengeFrame) -> Sequence[float] | None:
+def _state_vector_for_frame(
+    frame: LozengeFrame,
+    pelvis_px: Optional[Tuple[float, float]] = None,
+) -> Sequence[float] | None:
     """Encode one frame as an N-dim state vector.
 
     Shape: ``[OriginX, OriginY, RotationDegrees, lx_0, ly_0, ..., lx_N, ly_N]``
     where ``(OriginX, OriginY) == bone.pt0`` and local coords are
     computed in a frame-aligned basis built from ``bone.pt1 - bone.pt0``.
+
+    When ``pelvis_px`` is supplied (issue #279 hierarchical path), the
+    bone origin is reported relative to the person's pelvis pixel
+    position so the first two components of the state vector carry
+    articulation-only drift. The bone-local point layout stays
+    unchanged — subtracting pelvis cancels out of the relative
+    coordinates — so the signal downstream RDP sees is still the full
+    articulation shape, just without the whole-body translation noise.
 
     Returns ``None`` if the frame has no ``bone`` or no points — such
     frames cannot be compared across time and the caller should keep
@@ -129,6 +188,11 @@ def _state_vector_for_frame(frame: LozengeFrame) -> Sequence[float] | None:
         return None
 
     (p0x, p0y), (p1x, p1y) = frame.bone
+    if pelvis_px is not None:
+        p0x -= pelvis_px[0]
+        p0y -= pelvis_px[1]
+        p1x -= pelvis_px[0]
+        p1y -= pelvis_px[1]
     dx = p1x - p0x
     dy = p1y - p0y
     dist = math.hypot(dx, dy)
@@ -143,13 +207,40 @@ def _state_vector_for_frame(frame: LozengeFrame) -> Sequence[float] | None:
 
     out: List[float] = [p0x, p0y, angle]
     for p in frame.points:
-        rel_x = p.x - p0x
-        rel_y = p.y - p0y
+        # Use the ORIGINAL (not pelvis-subtracted) p coords for local
+        # projection — pelvis subtraction cancels out of relative
+        # coordinates, so this is equivalent to subtracting from both and
+        # then taking the difference. Avoids a double-subtract.
+        rel_x = p.x - (p0x + (pelvis_px[0] if pelvis_px is not None else 0.0))
+        rel_y = p.y - (p0y + (pelvis_px[1] if pelvis_px is not None else 0.0))
         lx = rel_x * ux[0] + rel_y * ux[1]
         ly = rel_x * uy[0] + rel_y * uy[1]
         out.append(lx)
         out.append(ly)
     return out
+
+
+def _camera_state_vector(cam: CameraFrame) -> Sequence[float]:
+    """Encode a plate-camera reference as a 21-dim state vector.
+
+    Shape: ``[tx, ty, tz] ++ R[9] ++ H2d[9]``. Identity matrices stand in
+    when the source didn't supply ``R`` or ``H2d`` (locked-off shots,
+    sidecars that only provided intrinsics, etc).
+    """
+    out: List[float] = [cam.t[0], cam.t[1], cam.t[2]]
+    out.extend(cam.R if cam.R is not None else (1.0, 0.0, 0.0,
+                                                 0.0, 1.0, 0.0,
+                                                 0.0, 0.0, 1.0))
+    out.extend(cam.H2d if cam.H2d is not None else (1.0, 0.0, 0.0,
+                                                     0.0, 1.0, 0.0,
+                                                     0.0, 0.0, 1.0))
+    return out
+
+
+def _person_state_vector(pf: PersonFrame) -> Sequence[float]:
+    """``[cam_t.x, cam_t.y, cam_t.z, pelvis_px.x, pelvis_px.y]`` — 5 dims."""
+    return [pf.cam_t[0], pf.cam_t[1], pf.cam_t[2],
+            pf.pelvis_px[0], pf.pelvis_px[1]]
 
 
 def undersample_object(
@@ -196,21 +287,165 @@ def undersample_object(
     return new_obj, len(obj.frames), len(new_frames)
 
 
+def _hierarchical_undersample(
+    doc: LozengeDoc,
+    *,
+    camera_tolerance: float,
+    person_tolerance: float,
+    articulation_tolerance: float,
+) -> LozengeDoc:
+    """Three-pass composed-tolerance keyframe reduction (issue #279).
+
+    Pass 1: RDP over :attr:`LozengeDoc.camera` under ``camera_tolerance``.
+    Pass 2: RDP over :attr:`LozengeDoc.persons` per pid under ``person_tolerance``.
+    Pass 3: RDP over each object's articulation-only state vector (bone
+            origin minus pelvis) under ``articulation_tolerance``.
+
+    Final kept frames per object = union of the three passes' retained
+    frames, intersected with the object's own frame set.
+    """
+    # Pass 1 — camera.
+    kept_cam_frames: set = set()
+    if doc.camera:
+        cam_frames_sorted = sorted(doc.camera.keys())
+        if camera_tolerance > 0 and len(cam_frames_sorted) >= 2:
+            cam_vectors = [_camera_state_vector(doc.camera[f]) for f in cam_frames_sorted]
+            kept_idx = rdp_reduction(cam_vectors, camera_tolerance)
+            kept_cam_frames = {cam_frames_sorted[i] for i in kept_idx}
+        else:
+            kept_cam_frames = set(cam_frames_sorted)
+
+    # Pass 2 — person root per pid. Pivot the frame-major persons dict
+    # into pid-major so each pid gets its own time-series.
+    kept_person_frames_by_pid: dict = {}
+    if doc.persons:
+        persons_by_pid: dict = {}
+        for f, per_frame in doc.persons.items():
+            for pid, pf in per_frame.items():
+                persons_by_pid.setdefault(pid, {})[f] = pf
+        for pid, frames in persons_by_pid.items():
+            sorted_frames = sorted(frames.keys())
+            if person_tolerance > 0 and len(sorted_frames) >= 2:
+                vectors = [_person_state_vector(frames[f]) for f in sorted_frames]
+                kept_idx = rdp_reduction(vectors, person_tolerance)
+                kept_person_frames_by_pid[pid] = {sorted_frames[i] for i in kept_idx}
+            else:
+                kept_person_frames_by_pid[pid] = set(sorted_frames)
+
+    # Pass 3 — per-object articulation with per-frame pelvis subtracted.
+    new_objects: dict = {}
+    for key, obj in doc.objects.items():
+        if not obj.frames:
+            new_objects[key] = obj
+            continue
+        sorted_frames = sorted(obj.frames.keys())
+        pid = obj.person_id
+
+        # Collect per-frame pelvis_px (may be empty if persons data absent).
+        pelvis_by_frame: dict = {}
+        if doc.persons:
+            for f in sorted_frames:
+                per = doc.persons.get(f)
+                if per is None:
+                    continue
+                pf = per.get(pid)
+                if pf is not None:
+                    pelvis_by_frame[f] = pf.pelvis_px
+
+        # Build the articulation state vectors. If any frame lacks a bone,
+        # bail on this object — can't compare without the anchor.
+        articulation_vectors: list = []
+        bone_ok = True
+        for f in sorted_frames:
+            sv = _state_vector_for_frame(
+                obj.frames[f], pelvis_px=pelvis_by_frame.get(f)
+            )
+            if sv is None:
+                bone_ok = False
+                break
+            articulation_vectors.append(sv)
+
+        if not bone_ok or len({len(v) for v in articulation_vectors}) != 1:
+            # Bone-less or varying-K object — keep every frame on the
+            # articulation pass; the outer passes still prune via the union.
+            kept_art_frames: set = set(sorted_frames)
+        elif articulation_tolerance <= 0 or len(articulation_vectors) < 3:
+            kept_art_frames = set(sorted_frames)
+        else:
+            kept_idx = rdp_reduction(articulation_vectors, articulation_tolerance)
+            kept_art_frames = {sorted_frames[i] for i in kept_idx}
+
+        # Compose: a frame is kept whenever ANY of the three passes
+        # retained it (and it exists on this object).
+        kept_person_frames = kept_person_frames_by_pid.get(pid, set())
+        obj_frames_set = set(sorted_frames)
+        final_kept = (kept_cam_frames | kept_person_frames | kept_art_frames) & obj_frames_set
+        if not final_kept:
+            # Degenerate: no outer-pass frames landed on this object AND
+            # the object has only 1-2 articulation frames. Keep everything.
+            final_kept = obj_frames_set
+
+        new_frames = {f: obj.frames[f] for f in sorted(final_kept)}
+        new_objects[key] = replace(obj, frames=new_frames)
+
+    return replace(doc, objects=new_objects)
+
+
 def undersample_doc(
-    doc: LozengeDoc, tolerance: float = DEFAULT_TOLERANCE
+    doc: LozengeDoc,
+    tolerance: Optional[float] = None,
+    *,
+    camera_tolerance: Optional[float] = None,
+    person_tolerance: Optional[float] = None,
+    articulation_tolerance: Optional[float] = None,
 ) -> LozengeDoc:
     """Return a copy of ``doc`` with each object's keyframes RDP-reduced.
+
+    Two call shapes:
+
+    * **Legacy single-pass** (PR #1): pass ``tolerance=X`` or no kwargs.
+      One bone-local RDP per object; identical behaviour to v0.1.
+    * **Hierarchical composed-tolerance** (issue #279): pass any of
+      ``camera_tolerance``, ``person_tolerance``, ``articulation_tolerance``.
+      Three sequential RDP passes; missing kwargs fall back to
+      :data:`PRESET_BALANCED`. See :func:`_hierarchical_undersample`.
 
     Shape geometry is untouched — only which frames carry a keyframe
     changes. Combine with :func:`rotobot_nuke.importer.build_roto` to
     turn the reduced doc into a Roto node.
     """
-    if tolerance <= 0:
+    hierarchical = any(
+        x is not None
+        for x in (camera_tolerance, person_tolerance, articulation_tolerance)
+    )
+    if hierarchical:
+        if tolerance is not None:
+            raise TypeError(
+                "undersample_doc: pass EITHER tolerance= (legacy single-pass) "
+                "OR the hierarchical kwargs (camera_tolerance / person_tolerance "
+                "/ articulation_tolerance), not both."
+            )
+        return _hierarchical_undersample(
+            doc,
+            camera_tolerance=camera_tolerance
+            if camera_tolerance is not None
+            else DEFAULT_CAMERA_TOLERANCE,
+            person_tolerance=person_tolerance
+            if person_tolerance is not None
+            else DEFAULT_PERSON_TOLERANCE,
+            articulation_tolerance=articulation_tolerance
+            if articulation_tolerance is not None
+            else DEFAULT_ARTICULATION_TOLERANCE,
+        )
+
+    # Legacy single-pass path.
+    tol = DEFAULT_TOLERANCE if tolerance is None else tolerance
+    if tol <= 0:
         return doc
 
     new_objects: dict = {}
     for key, obj in doc.objects.items():
-        new_obj, _before, _after = undersample_object(obj, tolerance)
+        new_obj, _before, _after = undersample_object(obj, tol)
         new_objects[key] = new_obj
 
     return replace(doc, objects=new_objects)

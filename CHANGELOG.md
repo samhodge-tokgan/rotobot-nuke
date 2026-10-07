@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Added — v3 reader + hierarchical undersampler (issue #279)
+- `rotobot_nuke.reader` now parses the `lozenge_bezier_anim` v3
+  additions: top-level `camera` → `CameraFrame` and `persons` → nested
+  `PersonFrame`. Both are optional; v2 JSONs still parse with
+  `doc.camera is None` and `doc.persons is None`.
+- `undersample_doc` grows a hierarchical composed-tolerance path. Pass
+  any of `camera_tolerance`, `person_tolerance`, `articulation_tolerance`
+  (default to `PRESET_BALANCED` individually) and the function runs
+  three sequential RDP passes (camera, person root, articulation) and
+  keeps the union of their retained frames per object. The legacy
+  single-pass `tolerance=` kwarg still works and is still the default
+  when no hierarchical kwarg is passed.
+- `TolerancePreset` named-tuple + `PRESET_COARSE` / `PRESET_BALANCED` /
+  `PRESET_FINE` ready-made triples. Unpack with `**PRESET_BALANCED._asdict()`.
+- Articulation state vector now subtracts the person's pelvis pixel
+  position before measuring, so the per-object RDP sees articulation
+  only — bone-origin drift from whole-body translation no longer
+  dominates.
+
+### Added — v0.1 undersampler (initial)
 - `rotobot_nuke.undersample` — RDP keyframe reduction on bone-local
   state vectors. Public API: `undersample_doc(doc, tolerance)`,
   `undersample_object(obj, tolerance)`, `undersample_json(in, out,
