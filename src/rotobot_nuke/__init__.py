@@ -37,8 +37,11 @@ from .undersample import (
     undersample_object,
 )
 
+from . import cache  # noqa: E402  (import-cache helpers; `from rotobot_nuke import cache`)
+
 __all__ = [
     "__version__",
+    "cache",
     "CameraFrame",
     "DEFAULT_ARTICULATION_TOLERANCE",
     "DEFAULT_CAMERA_TOLERANCE",
