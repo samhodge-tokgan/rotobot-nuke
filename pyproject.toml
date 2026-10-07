@@ -9,7 +9,7 @@ description = "Import Rotobot-Next lozenge_bezier_anim JSON into The Foundry's N
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
-authors = [{ name = "Sam Hodge", email = "sam.hodge@gmail.com" }]
+authors = [{ name = "Sam Hodge", email = "sam.hodge@tokgan.com" }]
 keywords = ["nuke", "rotobot", "roto", "vfx", "bezier", "spline"]
 classifiers = [
     "Development Status :: 4 - Beta",
