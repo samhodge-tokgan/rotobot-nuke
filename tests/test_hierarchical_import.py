@@ -222,11 +222,12 @@ class TestTransforms:
         frames = {f for f, _ in tx_keys}
         assert frames == {0, 1, 2}
 
-    def test_v3_doc_t3_rotation_matches_bone(self, fake_nuke, fixtures_dir):
+    def test_v3_doc_t3_rotation_lands_on_z_axis(self, fake_nuke, fixtures_dir):
         """v3_small has a bone from (150, 200) → (150, 400) (plate
         Y-down). In Y-up: (150, 880) → (150, 680). Direction: (0, -200)
-        = angle atan2(-200, 0) = -90°. T3 rotation key at frame 0
-        should match."""
+        = angle atan2(-200, 0) = -90°. Rotation must land on index 2
+        (Z-axis) — index 0 is X-axis which would rotate the roto out of
+        the plate plane (confirmed as the original PR #9 bug)."""
         doc = load_json(fixtures_dir / "v3_small.json")
         node = build_roto(doc, mode="hierarchical")
         root = node["curves"].rootLayer
@@ -234,10 +235,13 @@ class TestTransforms:
         pelvis = _child_layer(camera, "p0_pelvis")
         part = _child_layer(pelvis, "p0:leg:R:thigh")
         xform = part.getTransform()
-        rot_keys = xform.getRotationAnimCurve(0).anim_keys
-        # One key per frame; frame-0 rotation should be ~-90 degrees.
-        first_rot = next(v for f, v in rot_keys if f == 0)
-        assert first_rot == pytest.approx(-90.0, abs=1e-6)
+        # Rotation lands on Z (index 2), not X (index 0).
+        z_rot_keys = xform.getRotationAnimCurve(2).anim_keys
+        first_rot_z = next(v for f, v in z_rot_keys if f == 0)
+        assert first_rot_z == pytest.approx(-90.0, abs=1e-6)
+        # X-axis stays untouched at 0.
+        x_rot_keys = xform.getRotationAnimCurve(0).anim_keys
+        assert x_rot_keys == []
 
 
 # ---------------------------------------------------------------------------

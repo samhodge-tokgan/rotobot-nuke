@@ -52,12 +52,15 @@ class _TranslationAnimCurveSet:
 
 
 class _Transform:
+    """Mock of Nuke's ``AnimCTransform``. Rotation is 3-axis (XYZ) per
+    the real API — 2D rotos use index 2 (Z). Scale is XY (indices 0/1).
+    Confirmed against real Nuke's dir() surface on skylab 2026-10-07.
+    """
+
     def __init__(self) -> None:
         self._translation = _TranslationAnimCurveSet()
-        # Hierarchical importer (#279 PR 2) also sets rotation + scale.
-        # Real Nuke's LayerTransform always exposes these; the fake
-        # supports them so tests can validate the cascade math.
-        self._rotation = [_KnobFloat()]
+        # Rotation axes X=0, Y=1, Z=2 (real AnimCTransform shape).
+        self._rotation = [_KnobFloat(), _KnobFloat(), _KnobFloat()]
         self._scale = [_KnobFloat(1.0), _KnobFloat(1.0)]
 
     def getTranslationAnimCurve(self, index):

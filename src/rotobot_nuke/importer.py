@@ -231,19 +231,29 @@ def _set_layer_affine(
     scale_x: float = 1.0,
     scale_y: float = 1.0,
 ) -> None:
-    """Keyframe a Layer's Transform knob translate + rotation + scale.
+    """Keyframe a Layer's Transform knob: translate + rotation + scale.
 
-    Delegates to AnimCurve getters that must exist on the real Nuke
-    ``LayerTransform`` and on the test-suite fake-Nuke ``_Transform``.
+    Nuke's ``AnimCTransform`` indexes rotation + scale by **3-axis**
+    XYZ, not by 2-axis XY. For a 2D roto the only meaningful rotation
+    is around the view axis — Z — which is index ``2``. Scale uses
+    indices 0 (X) and 1 (Y). Confirmed on skylab 2026-10-07 via
+    ``dir(nuke.rotopaint.Layer.getTransform())`` after a bug-report
+    screenshot showed body-parts translated correctly but at wildly
+    wrong orientations (the rotations were being applied to the X
+    axis, flipping body parts out of the plate plane).
+
+    Delegates to AnimCurve getters that must exist on real Nuke's
+    ``AnimCTransform`` and on the test-suite fake-Nuke ``_Transform``.
     """
     xform = layer.getTransform()
     xform.getTranslationAnimCurve(0).addKey(frame, tx)
     xform.getTranslationAnimCurve(1).addKey(frame, ty)
     # Rotation + scale are optional per the design doc (Nuke's
-    # LayerTransform always has them, but a fake-Nuke test harness
+    # AnimCTransform always has them, but a fake-Nuke test harness
     # may skip them). Guard with hasattr for robustness.
     if hasattr(xform, "getRotationAnimCurve"):
-        xform.getRotationAnimCurve(0).addKey(frame, rotation_deg)
+        # Z-axis rotation only (index 2). X=0 and Y=1 stay at 0.
+        xform.getRotationAnimCurve(2).addKey(frame, rotation_deg)
     if hasattr(xform, "getScaleAnimCurve"):
         xform.getScaleAnimCurve(0).addKey(frame, scale_x)
         xform.getScaleAnimCurve(1).addKey(frame, scale_y)
