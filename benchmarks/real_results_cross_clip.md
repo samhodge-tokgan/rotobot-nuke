@@ -37,7 +37,32 @@ Four UHD clips from the PR #1 wedge sweep, each run through the full `rotobot_ne
 
 ## Interpretation
 
-* **Current synth-tuned BALANCED** should land close to 100% on every clip (confirms the per-clip finding from PR #4).
-* **`REAL_BALANCED` and 'aggressive'** should be the useful band: 40%ish and 15%ish retention respectively. If the knee is clip-dependent (wide range), fixed presets are inadequate and we need per-clip adaptive tolerance.
-* **Narrow range per preset** (say ≤10% spread) across the four clips means the retune in PR #4's conclusions is a reasonable fixed-preset choice. **Wide range** points to needing the composition-rule rethink (weighted sum / majority).
+**Confirmed, uniformly across clips**: the current synth-tuned `BALANCED` preset is a 100% no-op on real UHD footage. The retune direction from PR #4 is right.
+
+**New finding from the cross-clip spread**: the knee is **clip-complexity-dependent**. The range per preset widens as tolerance loosens:
+
+| preset | mean | range | spread |
+|---|---:|---|---:|
+| `REAL_FINE` (1.0, 2.0, 10.0) | 95.0% | 90.2–98.4% | 8.2 pp |
+| `REAL_COARSE` (2.5, 5.0, 25.0) | 78.6% | 73.9–84.0% | 10.1 pp |
+| `REAL_BALANCED` (5.0, 10.0, 50.0) | 52.9% | 42.5–68.2% | **25.7 pp** |
+| aggressive (10.0, 20.0, 100.0) | 31.0% | 17.2–48.1% | **30.9 pp** |
+| very aggressive (25.0, 50.0, 250.0) | 15.3% | 9.7–23.6% | 13.9 pp |
+
+Tight tolerances behave uniformly across clips (narrow spread → fixed presets fine). Loose tolerances explode in spread (wide → fixed presets inadequate at the useful band).
+
+The clip driving the wide spread is `pexels_33191756` — **134 objects / 5478 keyframes**, versus 41–42 objects / ~1200 keyframes for the other two. More objects means more opportunities for articulation to exceed tolerance on any given frame, so under the UNION rule more frames get retained.
+
+### What this means for the next retune
+
+- **Fixed `REAL_BALANCED = (5.0, 10.0, 50.0)`** gives 43% on simple clips and 68% on dense clips — a usable range but ~25 pp of unexpected variance by scene complexity.
+- **Per-clip-adaptive tolerance** (scale the triple by `median_kf_per_object` or `total_objects`, same spirit as Rotobot-Next's existing `knot_mult_min/max` auto-scaling) would narrow the spread. Candidate: multiply the triple by `(1 + log10(objects / 40))` so the dense 134-object clip gets looser tolerance.
+- **The composition-rule rethink** from PR #4's follow-up list stays open. The dense clip is where UNION's "any pass flags → keep" becomes most conservative; a 2-of-3 majority or weighted sum would reduce the spread.
+
+### Follow-ups unchanged from PR #4
+
+- Retune the preset values (now with cross-clip data to inform them).
+- Investigate alternate composition rules.
+- Validate on the final clip — `pexels_33191774_3840x2160_10s` — hit the 30-min background limit mid-pipeline and is being rerun separately; this report will be updated with its row when the fourth JSON lands.
+- Investigate the `--last=60 → fewer-output-frames` discrepancy in `rotobot_next`. New data from this run: `pexels_33191756_3840x2160_6s` actually produced **60 output frames**, so the discrepancy is clip-dependent (not a hard pipeline bug). Probably a decoding-timebase quirk on the 12s clips.
 
