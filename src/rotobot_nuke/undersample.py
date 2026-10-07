@@ -81,20 +81,39 @@ TOLERANCE_VERY_AGGRESSIVE = 25.0  # 45–80% kept; artist review needed
 DEFAULT_TOLERANCE = TOLERANCE_BALANCED
 
 
-# Composed-tolerance presets for the hierarchical path (issue #279). Each
-# number is in state-vector units for its own pass: ``camera_tolerance`` in
-# camera-space metres + unitless matrix cells; ``person_tolerance`` mixes
-# metres (cam_t) + pixels (pelvis_px); ``articulation_tolerance`` is
-# pixel-equivalent in the bone-local frame after pelvis subtraction.
+# Composed-tolerance presets for the hierarchical path (issue #279).
+# `camera_tolerance` + `person_tolerance` are in **screen pixels** (what
+# the camera H2d + person pelvis_px are measured in; these encode where
+# on the plate to draw the roto). `articulation_tolerance` is a
+# **dimensionless fraction of the person's max tapered-capsule radius**
+# (body-local, depth-invariant per person — see PR #5).
+#
+# Values retuned from a 4-clip cross-clip sweep on real UHD footage
+# (see benchmarks/real_results_cross_clip.md). Measured retention:
+#
+#   FINE     (0.5, 1.0, 0.015)   98.1% mean,  3.2 pp spread
+#   BALANCED (1.0, 2.0, 0.05)    89.4% mean,  3.0 pp spread    <-- default
+#   COARSE   (2.5, 5.0, 0.1)     72.6% mean, 15.4 pp spread
+#
+# The pre-PR-#5 pixel-metric values (0.15 / 0.4 / 1.0 for articulation)
+# are now re-interpretable as 0.0015 / 0.004 / 0.01 of body-radius under
+# the new metric — super tight, keeps everything, hence the retune.
 class TolerancePreset(NamedTuple):
     camera_tolerance: float
     person_tolerance: float
     articulation_tolerance: float
 
 
-PRESET_COARSE = TolerancePreset(2.0, 4.0, 1.0)
-PRESET_BALANCED = TolerancePreset(1.0, 2.0, 0.4)
-PRESET_FINE = TolerancePreset(0.5, 1.0, 0.15)
+PRESET_FINE = TolerancePreset(0.5, 1.0, 0.015)
+PRESET_BALANCED = TolerancePreset(1.0, 2.0, 0.05)
+PRESET_COARSE = TolerancePreset(2.5, 5.0, 0.1)
+
+# Named-preset lookup for the CLI (and anyone else wanting string IDs).
+PRESETS = {
+    "fine": PRESET_FINE,
+    "balanced": PRESET_BALANCED,
+    "coarse": PRESET_COARSE,
+}
 
 DEFAULT_CAMERA_TOLERANCE = PRESET_BALANCED.camera_tolerance
 DEFAULT_PERSON_TOLERANCE = PRESET_BALANCED.person_tolerance
@@ -525,16 +544,88 @@ def undersample_json(
     input_path,
     output_path,
     tolerance: float = DEFAULT_TOLERANCE,
+    *,
+    camera_tolerance: Optional[float] = None,
+    person_tolerance: Optional[float] = None,
+    articulation_tolerance: Optional[float] = None,
 ) -> dict:
     """File-to-file convenience: load ``input_path``, undersample,
     write to ``output_path``. Returns a per-object before/after report.
 
-    Writes the EXACT original JSON structure back out (frames whose
-    keys weren't retained are removed; nothing else is renamed or
-    reshaped).
+    Two call shapes, matching :func:`undersample_doc`:
+
+    * **Legacy single-pass**: pass ``tolerance=X`` or no hierarchical
+      kwargs. Runs the pixel-metric bone-local RDP per object; the
+      operator-facing conversion that shipped in PR #1. Preserves the
+      exact JSON top-level structure byte-for-byte beyond the filtered
+      ``frames`` dicts.
+
+    * **Hierarchical composed-tolerance** (issue #279): pass any of
+      ``camera_tolerance``, ``person_tolerance``, ``articulation_tolerance``.
+      Routes through :func:`undersample_doc`, which uses the v3
+      ``camera`` + ``persons`` blocks and the body-local articulation
+      metric. The output JSON is reserialised from the parsed
+      :class:`LozengeDoc`, so key order within each object matches the
+      current writer convention (not necessarily the input).
+
+    Writes `frames` whose keys weren't retained removed; nothing else
+    is renamed or reshaped.
     """
     in_path = Path(input_path)
     out_path = Path(output_path)
+
+    hierarchical = any(
+        x is not None
+        for x in (camera_tolerance, person_tolerance, articulation_tolerance)
+    )
+
+    if hierarchical:
+        # Route through the parsed-doc hierarchical path. The output
+        # JSON then needs reserialising from the raw dict's structure
+        # with filtered frame sets.
+        from .reader import load_json as _load_json  # local to keep CLI light
+
+        doc = _load_json(in_path)
+        reduced = undersample_doc(
+            doc,
+            camera_tolerance=camera_tolerance,
+            person_tolerance=person_tolerance,
+            articulation_tolerance=articulation_tolerance,
+        )
+
+        with in_path.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+
+        objects = raw.get("objects") or {}
+        report: dict = {}
+        for obj_id, obj_raw in list(objects.items()):
+            frames_raw = obj_raw.get("frames") or {}
+            kept_obj = reduced.objects.get(obj_id)
+            if kept_obj is None:
+                report[obj_id] = (len(frames_raw), 0)
+                obj_raw["frames"] = {}
+                continue
+            kept_keys = {str(k) for k in kept_obj.frames.keys()} | {
+                str(k).lstrip("0") or "0" for k in kept_obj.frames.keys()
+            }
+            # Preserve the raw key representations the input used (string
+            # frame keys could be "0", "00", or "0001" etc.).
+            new_frames = {}
+            for raw_k, raw_v in frames_raw.items():
+                try:
+                    kept = int(raw_k) in kept_obj.frames
+                except (TypeError, ValueError):
+                    kept = raw_k in kept_keys
+                if kept:
+                    new_frames[raw_k] = raw_v
+            report[obj_id] = (len(frames_raw), len(new_frames))
+            obj_raw["frames"] = new_frames
+
+        with out_path.open("w", encoding="utf-8") as fh:
+            json.dump(raw, fh, indent=2)
+        return report
+
+    # Legacy single-pass path (unchanged).
     with in_path.open("r", encoding="utf-8") as fh:
         raw = json.load(fh)
 
@@ -622,21 +713,104 @@ def _cli(argv=None) -> int:
         prog="rotobot-undersample",
         description=(
             "Reduce the per-object temporal keyframe count in a Rotobot-Next "
-            "lozenge_bezier_anim JSON via RDP on bone-local state vectors."
+            "lozenge_bezier_anim JSON. Legacy single-pass RDP by default; "
+            "hierarchical composed-tolerance (PR #5 body-local metric) via "
+            "--preset or individual --*-tolerance kwargs."
         ),
     )
     parser.add_argument("input", help="input JSON path")
     parser.add_argument("output", help="output JSON path")
-    parser.add_argument(
+
+    legacy = parser.add_argument_group("legacy single-pass")
+    legacy.add_argument(
         "--tolerance",
         "-t",
         type=float,
-        default=DEFAULT_TOLERANCE,
-        help=f"RDP tolerance in state-vector units (default {DEFAULT_TOLERANCE})",
+        default=None,
+        help=(
+            "Single-pass RDP tolerance in pixel-equivalents. Backwards-"
+            f"compatible with PR #1 (default {DEFAULT_TOLERANCE} when neither "
+            "a preset nor hierarchical kwargs are passed)."
+        ),
     )
+
+    hier = parser.add_argument_group(
+        "hierarchical composed-tolerance (v3, body-local)"
+    )
+    hier.add_argument(
+        "--preset",
+        choices=sorted(PRESETS.keys()),
+        default=None,
+        help=(
+            "Named triple (fine/balanced/coarse) from the 4-clip "
+            "cross-clip sweep in benchmarks/real_results_cross_clip.md. "
+            "Individual --*-tolerance kwargs override preset components."
+        ),
+    )
+    hier.add_argument(
+        "--camera-tolerance",
+        type=float,
+        default=None,
+        help="Pass-1 (camera H2d) tolerance in screen pixels.",
+    )
+    hier.add_argument(
+        "--person-tolerance",
+        type=float,
+        default=None,
+        help="Pass-2 (person root) tolerance in screen pixels.",
+    )
+    hier.add_argument(
+        "--articulation-tolerance",
+        type=float,
+        default=None,
+        help=(
+            "Pass-3 (per-object articulation) tolerance as a fraction of "
+            "the person's max tapered-capsule radius (body-local). PR #5."
+        ),
+    )
+
     args = parser.parse_args(argv)
 
-    report = undersample_json(args.input, args.output, tolerance=args.tolerance)
+    # Resolve the preset, letting individual kwargs override.
+    camera_tol = args.camera_tolerance
+    person_tol = args.person_tolerance
+    articulation_tol = args.articulation_tolerance
+    if args.preset is not None:
+        p = PRESETS[args.preset]
+        if camera_tol is None:
+            camera_tol = p.camera_tolerance
+        if person_tol is None:
+            person_tol = p.person_tolerance
+        if articulation_tol is None:
+            articulation_tol = p.articulation_tolerance
+
+    hierarchical = any(
+        x is not None for x in (camera_tol, person_tol, articulation_tol)
+    )
+
+    if hierarchical and args.tolerance is not None:
+        parser.error(
+            "pass EITHER --tolerance (legacy single-pass) OR a preset / "
+            "hierarchical kwargs, not both"
+        )
+
+    if hierarchical:
+        report = undersample_json(
+            args.input,
+            args.output,
+            camera_tolerance=camera_tol,
+            person_tolerance=person_tol,
+            articulation_tolerance=articulation_tol,
+        )
+        label = (
+            f"hierarchical (cam={camera_tol}, person={person_tol}, "
+            f"articulation={articulation_tol})"
+        )
+    else:
+        tol = args.tolerance if args.tolerance is not None else DEFAULT_TOLERANCE
+        report = undersample_json(args.input, args.output, tolerance=tol)
+        label = f"single-pass tolerance={tol}"
+
     for obj_id, (before, after) in sorted(report.items()):
         pct = (100.0 * after / before) if before else 0.0
         print(
@@ -647,7 +821,7 @@ def _cli(argv=None) -> int:
     if orig:
         print(
             f"TOTAL: {orig} -> {kept} frames "
-            f"({100.0 * kept / orig:.1f}% kept) at tolerance={args.tolerance}"
+            f"({100.0 * kept / orig:.1f}% kept) at {label}"
         )
     return 0
 
