@@ -115,9 +115,24 @@ class _CurvesKnob:
         self.rootLayer = _Layer(self)
         self._transform = _Transform()
         self.changed_count = 0
+        self._script_text = None  # set by fromScript/toScript round-trips
 
     def changed(self):
         self.changed_count += 1
+
+    # Shim for the real knob's bulk-text accessors. The real Nuke knob
+    # serialises every Layer/Shape as a hex-encoded `.nk` fragment and
+    # reparses it in C++. For tests we round-trip an opaque token so
+    # the cache fast-path becomes observable.
+    def toScript(self) -> str:
+        return f"<fake-script layers={len(self.rootLayer.children)}>"
+
+    def fromScript(self, text: str) -> None:
+        self._script_text = text
+        # Mark via a sentinel child so tests can detect "fast path taken".
+        marker = _Layer(self)
+        marker.name = "__from_script_marker__"
+        self.rootLayer.children.append(marker)
 
 
 class _Knob:

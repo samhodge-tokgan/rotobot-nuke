@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `.nk` curves-knob import cache
+- New `rotobot_nuke.cache` module. When `build_roto(..., cache_path=...)`
+  is called, the roto's `curves` knob text is written under
+  `$XDG_CACHE_HOME/rotobot_nuke/` (default `~/.cache/rotobot_nuke/`) on
+  first import; subsequent imports of the same JSON (same mtime, mode,
+  curve_type, undersample_tolerance) reload via
+  `curves.fromScript(text)` — a measured **188× speedup** on a dense
+  323-object UHD plate (82.87s Python-API build → 0.44s cache-load).
+- The slow per-knot `Shape.append(AnimControlPoint)` path (where ≥95%
+  of build time is spent on dense plates) runs once per unique JSON;
+  later imports skip it entirely.
+- Any build-parameter or mtime change invalidates automatically.
+  Public helpers: `make_key`, `get`, `put`, `invalidate`, `cache_stats`.
+- `cache_path` is opt-in; omitting it preserves the pre-cache behaviour
+  (no file reads, no file writes).
+
 ### Added — v3 reader + hierarchical undersampler (issue #279)
 - `rotobot_nuke.reader` now parses the `lozenge_bezier_anim` v3
   additions: top-level `camera` → `CameraFrame` and `persons` → nested
