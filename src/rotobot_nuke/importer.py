@@ -7,15 +7,13 @@ does).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 import nuke
 import nuke.rotopaint
 
 from .reader import LozengeDoc, LozengeObject
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
+from .undersample import undersample_doc
 
 
 FINGER_ORDER = ("A_thumb", "B_index", "C_middle", "D_ring", "E_pinky")
@@ -110,6 +108,7 @@ def build_roto(
     roto_name: str = "Tokgan_Roto",
     curve_type: str = "bspline",
     set_project_fps: bool = False,
+    undersample_tolerance: Optional[float] = None,
 ):
     """Build a Nuke ``Roto`` node from the parsed document and return it.
 
@@ -120,6 +119,11 @@ def build_roto(
             additionally keyframes tangent handles.
         set_project_fps: when ``True``, pokes ``nuke.root()["fps"]`` to the
             doc's FPS. Default ``False`` — do not mutate project settings.
+        undersample_tolerance: when set to a positive number, run
+            :func:`rotobot_nuke.undersample.undersample_doc` with that
+            tolerance on a copy of ``doc`` before building keyframes.
+            Reduces per-object keyframe count via RDP on bone-local state
+            vectors. ``None`` (default) keeps every frame.
 
     Returns:
         The newly created ``nuke.Node`` (Roto).
@@ -128,6 +132,9 @@ def build_roto(
         raise ValueError(
             f"curve_type must be 'bspline' or 'bezier'; got {curve_type!r}"
         )
+
+    if undersample_tolerance is not None and undersample_tolerance > 0:
+        doc = undersample_doc(doc, tolerance=float(undersample_tolerance))
 
     if set_project_fps:
         nuke.root()["fps"].setValue(doc.fps)

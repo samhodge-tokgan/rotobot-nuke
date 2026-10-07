@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `rotobot_nuke.undersample` — RDP keyframe reduction on bone-local
+  state vectors. Public API: `undersample_doc(doc, tolerance)`,
+  `undersample_object(obj, tolerance)`, `undersample_json(in, out,
+  tolerance)`, `rdp_reduction(points, tolerance)`.
+- `build_roto(doc, undersample_tolerance=5.0)` kwarg — reduce
+  keyframes inline during Nuke import.
+- `rotobot-undersample` console script for file-to-file batch use.
+- Tolerance preset constants `TOLERANCE_CONSERVATIVE`,
+  `TOLERANCE_BALANCED` (default), `TOLERANCE_AGGRESSIVE`,
+  `TOLERANCE_VERY_AGGRESSIVE`, picked from a wedge sweep across four
+  real UHD/HD production JSONs.
+- Nuke menu entries for the balanced + aggressive presets and a
+  "prompt for tolerance" variant.
+
+Algorithm ported from the `key_reduction` branch of
+[`tokgan_silhouette_import`](https://github.com/samhodge-aiml/tokgan_silhouette_import/tree/key_reduction)
+(MIT); re-shaped to operate on `LozengeDoc` in memory rather than
+file-to-file.
+
 ## [0.1.0] — 2026-10-07
 
 ### Added

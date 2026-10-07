@@ -55,6 +55,59 @@ node = build_roto(doc, curve_type="bspline")   # or "bezier"
 print(node.name())                              # => "Tokgan_Roto" (or Nuke-uniquified)
 ```
 
+### Undersampling (RDP keyframe reduction)
+
+Rotobot-Next writes one JSON keyframe per video frame; a 6s UHD clip
+with ~140 segments can emit 8,000+ keyframes that Nuke then has to
+scrub through for every slider nudge. `rotobot-nuke` can trim that
+down with [Ramer-Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
+on bone-local state vectors (algorithm ported from the
+[`key_reduction` branch of `tokgan_silhouette_import`](https://github.com/samhodge-aiml/tokgan_silhouette_import/tree/key_reduction),
+MIT-licensed):
+
+```python
+from rotobot_nuke import load_json, build_roto, TOLERANCE_BALANCED
+
+doc = load_json("/path/to/clip.json")
+build_roto(doc, undersample_tolerance=TOLERANCE_BALANCED)      # 5.0
+```
+
+Or operate on the parsed doc directly:
+
+```python
+from rotobot_nuke import undersample_doc
+
+reduced = undersample_doc(doc, tolerance=5.0)
+```
+
+Or filter a JSON file to a new JSON file via the console script:
+
+```bash
+rotobot-undersample input.json output.json --tolerance 5
+```
+
+#### Tolerance presets
+
+Picked from a wedge sweep across four real UHD/HD Rotobot-Next outputs
+(1.1 MB → 57.9 MB; 126 → 8,198 keyframes). Units are mixed pixel +
+degree — the state-vector norm is dominated by bone-origin pixel
+coordinates on typical plates, so `tolerance = n` is roughly "keep a
+frame if any aspect of its state vector diverged by `n`
+pixel-equivalents from a linear interpolation of its retained
+neighbours."
+
+| Preset | Value | Keyframes kept (observed on real data) |
+|---|---:|---|
+| `TOLERANCE_CONSERVATIVE` | 2.0 | ≥99% — barely trims |
+| `TOLERANCE_BALANCED` (default) | 5.0 | 87–99% kept — useful mid-ground |
+| `TOLERANCE_AGGRESSIVE` | 10.0 | ~75% kept — faster scrubs, still coarse-faithful |
+| `TOLERANCE_VERY_AGGRESSIVE` | 25.0 | 45–80% kept — artist review recommended |
+
+Static-pose captures (few keyframes per object) are left alone; the
+algorithm needs 3+ frames to find anything to drop. Objects that
+lack per-frame `bone` endpoints (v1 schema, or v2 captures that
+didn't record them) are also left untouched.
+
 Running this from `nuke -t` works; running it outside Nuke does not — it
 imports `nuke.rotopaint`, which only exists inside The Foundry's bundled
 Python.
