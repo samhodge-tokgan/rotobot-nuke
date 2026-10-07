@@ -3,6 +3,9 @@
 No ``nuke`` import; safe to use (and test) outside of Nuke.
 
 Supported schema versions:
+    v3 — adds optional top-level ``camera`` + ``persons`` reference-frame
+         blocks (issue #279) so the hierarchical undersampler can subtract
+         plate motion + whole-body translation before measuring articulation.
     v2 — carries ``resolution``/``width``/``height``, per-object ``visibility``,
          per-frame ``bone``, optional ``person_depth``.
     v1 — legacy; lacks any in-band resolution. The ``resolution`` kwarg is
@@ -76,6 +79,43 @@ class LozengeObject:
     frames: dict
 
 
+@dataclass(frozen=True)
+class CameraFrame:
+    """v3 (#279) per-frame plate-camera reference. All fields optional on the
+    wire — unspecified values default to identity transforms.
+
+    Coordinates are MHR camera space (metres, +Z forward) for ``t`` + ``R``
+    and plate pixels for ``H2d``. ``source`` names the provenance of this
+    entry (``sidecar`` / ``ecc`` / ``identity``).
+    """
+
+    focal: float = 0.0
+    cx: float = 0.0
+    cy: float = 0.0
+    t: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    R: Optional[Tuple[float, ...]] = None  # 9 floats, 3x3 row-major
+    H2d: Optional[Tuple[float, ...]] = None  # 9 floats, 3x3 pixel homography
+    source: str = ""
+
+
+@dataclass(frozen=True)
+class PersonFrame:
+    """v3 (#279) per-frame per-person root pose.
+
+    ``pelvis_px`` is the mhr70 kp 9/10 (L+R hip) midpoint in plate pixels.
+    ``pelvis_3d`` is the camera-space 3D midpoint when 3D keypoints exist.
+    ``joint_xforms`` and ``pose`` are passed through verbatim from the Hastur
+    sidecar when it recorded them; nothing in ``rotobot-nuke`` interprets
+    their contents, but they travel with the doc for third-party consumers.
+    """
+
+    cam_t: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    pelvis_px: Tuple[float, float] = (0.0, 0.0)
+    pelvis_3d: Optional[Tuple[float, float, float]] = None
+    joint_xforms: Tuple[float, ...] = ()
+    pose: Tuple[float, ...] = ()
+
+
 @dataclass
 class LozengeDoc:
     schema: str
@@ -84,6 +124,10 @@ class LozengeDoc:
     resolution: Tuple[int, int]
     objects: dict
     person_depth: Optional[dict] = None
+    # v3 (#279): frame -> CameraFrame
+    camera: Optional[dict] = None
+    # v3 (#279): frame -> pid -> PersonFrame
+    persons: Optional[dict] = None
 
 
 def _as_int(x: Any) -> Optional[int]:
@@ -251,6 +295,126 @@ def _resolve_resolution(
     )
 
 
+def _parse_mat3(raw: Any) -> Optional[Tuple[float, ...]]:
+    """Parse a 9-float row-major 3x3 matrix. Returns ``None`` on bad shape."""
+    if not isinstance(raw, (list, tuple)) or len(raw) < 9:
+        return None
+    try:
+        return tuple(float(raw[i]) for i in range(9))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_camera_frame(raw: Any) -> Optional[CameraFrame]:
+    if not isinstance(raw, Mapping):
+        return None
+    t_raw = raw.get("t")
+    t: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    if isinstance(t_raw, (list, tuple)) and len(t_raw) >= 3:
+        try:
+            t = (float(t_raw[0]), float(t_raw[1]), float(t_raw[2]))
+        except (TypeError, ValueError):
+            t = (0.0, 0.0, 0.0)
+    try:
+        focal = float(raw.get("focal", 0.0))
+        cx = float(raw.get("cx", 0.0))
+        cy = float(raw.get("cy", 0.0))
+    except (TypeError, ValueError):
+        focal = cx = cy = 0.0
+    return CameraFrame(
+        focal=focal,
+        cx=cx,
+        cy=cy,
+        t=t,
+        R=_parse_mat3(raw.get("R")),
+        H2d=_parse_mat3(raw.get("H2d")),
+        source=str(raw.get("source", "")),
+    )
+
+
+def _parse_person_frame(raw: Any) -> Optional[PersonFrame]:
+    if not isinstance(raw, Mapping):
+        return None
+    cam_t_raw = raw.get("cam_t")
+    cam_t: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    if isinstance(cam_t_raw, (list, tuple)) and len(cam_t_raw) >= 3:
+        try:
+            cam_t = (float(cam_t_raw[0]), float(cam_t_raw[1]), float(cam_t_raw[2]))
+        except (TypeError, ValueError):
+            cam_t = (0.0, 0.0, 0.0)
+    pelvis_px_raw = raw.get("pelvis_px")
+    pelvis_px: Tuple[float, float] = (0.0, 0.0)
+    if isinstance(pelvis_px_raw, (list, tuple)) and len(pelvis_px_raw) >= 2:
+        try:
+            pelvis_px = (float(pelvis_px_raw[0]), float(pelvis_px_raw[1]))
+        except (TypeError, ValueError):
+            pelvis_px = (0.0, 0.0)
+    pelvis_3d: Optional[Tuple[float, float, float]] = None
+    pelvis_3d_raw = raw.get("pelvis_3d")
+    if isinstance(pelvis_3d_raw, (list, tuple)) and len(pelvis_3d_raw) >= 3:
+        try:
+            pelvis_3d = (
+                float(pelvis_3d_raw[0]),
+                float(pelvis_3d_raw[1]),
+                float(pelvis_3d_raw[2]),
+            )
+        except (TypeError, ValueError):
+            pelvis_3d = None
+
+    def _flat_floats(x) -> Tuple[float, ...]:
+        if not isinstance(x, (list, tuple)):
+            return ()
+        try:
+            return tuple(float(v) for v in x)
+        except (TypeError, ValueError):
+            return ()
+
+    return PersonFrame(
+        cam_t=cam_t,
+        pelvis_px=pelvis_px,
+        pelvis_3d=pelvis_3d,
+        joint_xforms=_flat_floats(raw.get("joint_xforms")),
+        pose=_flat_floats(raw.get("pose")),
+    )
+
+
+def _parse_camera(raw: Any) -> Optional[dict]:
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict = {}
+    for fk, fv in raw.items():
+        fi = _as_int(fk)
+        if fi is None:
+            continue
+        parsed = _parse_camera_frame(fv)
+        if parsed is None:
+            continue
+        out[fi] = parsed
+    return out or None
+
+
+def _parse_persons(raw: Any) -> Optional[dict]:
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict = {}
+    for fk, fv in raw.items():
+        fi = _as_int(fk)
+        if fi is None or not isinstance(fv, Mapping):
+            continue
+        inner: dict = {}
+        for pk, pv in fv.items():
+            pi = _as_int(pk)
+            if pi is None:
+                continue
+            parsed = _parse_person_frame(pv)
+            if parsed is None:
+                continue
+            inner[pi] = parsed
+        if inner:
+            out[fi] = inner
+    return out or None
+
+
 def _read_json(path_or_file: PathLike) -> Any:
     if hasattr(path_or_file, "read"):
         return json.load(path_or_file)  # type: ignore[arg-type]
@@ -327,6 +491,9 @@ def load_json(
                     continue
             person_depth[fi] = inner
 
+    camera = _parse_camera(data.get("camera"))
+    persons = _parse_persons(data.get("persons"))
+
     return LozengeDoc(
         schema=schema or SCHEMA_NAME,
         schema_version=schema_version,
@@ -334,4 +501,6 @@ def load_json(
         resolution=res,
         objects=objects,
         person_depth=person_depth,
+        camera=camera,
+        persons=persons,
     )
