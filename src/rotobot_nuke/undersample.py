@@ -165,6 +165,7 @@ def rdp_reduction(points: Sequence[Sequence[float]], tolerance: float) -> List[i
 def _state_vector_for_frame(
     frame: LozengeFrame,
     pelvis_px: Optional[Tuple[float, float]] = None,
+    body_scale: float = 1.0,
 ) -> Sequence[float] | None:
     """Encode one frame as an N-dim state vector.
 
@@ -175,14 +176,19 @@ def _state_vector_for_frame(
     When ``pelvis_px`` is supplied (issue #279 hierarchical path), the
     bone origin is reported relative to the person's pelvis pixel
     position so the first two components of the state vector carry
-    articulation-only drift. The bone-local point layout stays
-    unchanged — subtracting pelvis cancels out of the relative
-    coordinates — so the signal downstream RDP sees is still the full
-    articulation shape, just without the whole-body translation noise.
+    articulation-only drift.
 
-    Returns ``None`` if the frame has no ``bone`` or no points — such
-    frames cannot be compared across time and the caller should keep
-    them unchanged.
+    When ``body_scale > 0`` is supplied, every spatial component (bone
+    origin AND local knot coords) is divided by it so the state vector
+    becomes **dimensionless, body-local**. The intended value is the
+    person's max tapered-capsule radius (:func:`_person_max_radius`),
+    which shrinks with camera distance exactly as the actor does — a
+    tolerance expressed in units of ``body_scale`` means the same
+    "amount of articulation" for a near actor and a far actor in the
+    same shot, and the same across body parts of one person. Rotation
+    is already scale-invariant, so it's left in degrees.
+
+    Returns ``None`` if the frame has no ``bone`` or no points.
     """
     if frame.bone is None or not frame.points:
         return None
@@ -205,7 +211,9 @@ def _state_vector_for_frame(
     # relative to bone-local X.
     angle = -math.degrees(math.atan2(dy, dx))
 
-    out: List[float] = [p0x, p0y, angle]
+    s = body_scale if body_scale > 0 else 1.0
+
+    out: List[float] = [p0x / s, p0y / s, angle]
     for p in frame.points:
         # Use the ORIGINAL (not pelvis-subtracted) p coords for local
         # projection — pelvis subtraction cancels out of relative
@@ -215,8 +223,50 @@ def _state_vector_for_frame(
         rel_y = p.y - (p0y + (pelvis_px[1] if pelvis_px is not None else 0.0))
         lx = rel_x * ux[0] + rel_y * ux[1]
         ly = rel_x * uy[0] + rel_y * uy[1]
-        out.append(lx)
-        out.append(ly)
+        out.append(lx / s)
+        out.append(ly / s)
+    return out
+
+
+def _person_max_radius(doc: LozengeDoc) -> dict:
+    """Per-person maximum tapered-capsule radius, in plate pixels.
+
+    For each person, walk every one of their lozenge objects + every
+    frame of each + every control point of each; compute the point's
+    perpendicular distance to its bone's axis. Return the max over all
+    of a person's objects, keyed by ``person_id``.
+
+    This is a clip-wide scalar (one value per person for the whole
+    doc), not per-frame — a stable normaliser that reflects how large
+    the actor projects onto the plate. On far actors the max shrinks;
+    on near actors it grows; same for both at the SAME frame.
+
+    Returns an empty dict when the doc has no objects or no points.
+    """
+    out: dict = {}
+    for obj in doc.objects.values():
+        if not obj.frames:
+            continue
+        pid = obj.person_id
+        for frame in obj.frames.values():
+            if frame.bone is None or not frame.points:
+                continue
+            (p0x, p0y), (p1x, p1y) = frame.bone
+            dx = p1x - p0x
+            dy = p1y - p0y
+            dist = math.hypot(dx, dy)
+            if dist <= 0.0:
+                continue
+            # Perpendicular unit vector to the bone axis. The lozenge
+            # radius at any knot is |projection of (knot - p0) onto uy|.
+            uyx = -dy / dist
+            uyy = dx / dist
+            for p in frame.points:
+                rx = p.x - p0x
+                ry = p.y - p0y
+                perp = abs(rx * uyx + ry * uyy)
+                if perp > out.get(pid, 0.0):
+                    out[pid] = perp
     return out
 
 
@@ -297,13 +347,27 @@ def _hierarchical_undersample(
     """Three-pass composed-tolerance keyframe reduction (issue #279).
 
     Pass 1: RDP over :attr:`LozengeDoc.camera` under ``camera_tolerance``.
+            Camera + person state vectors stay in screen pixels (metres
+            for the ``t`` / ``cam_t`` components); these passes encode
+            "where on the plate to draw the roto", so pixel units match
+            the thing being measured.
     Pass 2: RDP over :attr:`LozengeDoc.persons` per pid under ``person_tolerance``.
-    Pass 3: RDP over each object's articulation-only state vector (bone
-            origin minus pelvis) under ``articulation_tolerance``.
+    Pass 3: RDP over each object's articulation-only state vector
+            (bone origin minus pelvis) under ``articulation_tolerance``.
+            Articulation vectors are normalised by the person's max
+            tapered-capsule radius so the tolerance is a dimensionless
+            fraction of body-radius — depth-invariant per person,
+            cross-body-part consistent within one person.
 
     Final kept frames per object = union of the three passes' retained
     frames, intersected with the object's own frame set.
     """
+    # Clip-wide per-person body scale (max tapered-capsule radius in
+    # plate pixels). Falls back to 1.0 when no data is available for a
+    # given person — in that case the articulation vectors stay in
+    # pixel units, exactly as PR #2 shipped them.
+    person_scale = _person_max_radius(doc)
+
     # Pass 1 — camera.
     kept_cam_frames: set = set()
     if doc.camera:
@@ -354,11 +418,17 @@ def _hierarchical_undersample(
 
         # Build the articulation state vectors. If any frame lacks a bone,
         # bail on this object — can't compare without the anchor.
+        # body_scale normalises the vector to body-local fractions so a
+        # fixed `articulation_tolerance` means the same amount of
+        # articulation regardless of how far the actor is from camera.
+        scale = person_scale.get(pid, 1.0)
         articulation_vectors: list = []
         bone_ok = True
         for f in sorted_frames:
             sv = _state_vector_for_frame(
-                obj.frames[f], pelvis_px=pelvis_by_frame.get(f)
+                obj.frames[f],
+                pelvis_px=pelvis_by_frame.get(f),
+                body_scale=scale,
             )
             if sv is None:
                 bone_ok = False
