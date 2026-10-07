@@ -54,9 +54,20 @@ class _TranslationAnimCurveSet:
 class _Transform:
     def __init__(self) -> None:
         self._translation = _TranslationAnimCurveSet()
+        # Hierarchical importer (#279 PR 2) also sets rotation + scale.
+        # Real Nuke's LayerTransform always exposes these; the fake
+        # supports them so tests can validate the cascade math.
+        self._rotation = [_KnobFloat()]
+        self._scale = [_KnobFloat(1.0), _KnobFloat(1.0)]
 
     def getTranslationAnimCurve(self, index):
         return self._translation.getTranslationAnimCurve(index)
+
+    def getRotationAnimCurve(self, index):
+        return self._rotation[index]
+
+    def getScaleAnimCurve(self, index):
+        return self._scale[index]
 
 
 class _ControlPoint:
