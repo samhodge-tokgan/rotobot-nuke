@@ -9,7 +9,30 @@ permissions:
   contents: read
 
 jobs:
+  # A tag could publish a tree nobody had tested: tests run on push-to-main and
+  # on PRs, but nothing re-ran them for the tag, and `build` did not depend on
+  # them. Cheap insurance against tagging the wrong commit.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Pytest
+        run: pytest -q
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +44,24 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build
+      # The tag name never reaches `python -m build` -- the version comes from
+      # the tree. So v0.4.0 was cut without bumping it and built
+      # rotobot_nuke-0.3.0, which PyPI would have rejected as a duplicate of a
+      # release already published. Nothing compared the two, and the only
+      # visible sign was the artefact filename on the Actions tab.
+      - name: The artefact version must match the tag
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          tag="${tag%-rc*}"
+          built=$(ls dist/*.tar.gz | sed -E 's|.*/[^-]+-(.*)\.tar\.gz|\1|')
+          echo "tag=$tag built=$built"
+          if [ "$tag" != "$built" ]; then
+            echo "::error::tag $GITHUB_REF_NAME wants version $tag but the tree builds $built." \
+                 "Bump src/rotobot_nuke/_version.py and re-cut the tag."
+            exit 1
+          fi
+
       - name: Upload build artefact
         uses: actions/upload-artifact@v4
         with:

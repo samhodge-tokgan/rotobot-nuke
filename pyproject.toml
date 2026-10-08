@@ -4,7 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rotobot-nuke"
-version = "0.3.0"
+# NOT a literal. The version lives in src/rotobot_nuke/_version.py and is read
+# from there, because it used to live here AND there with nothing comparing the
+# two -- so `python -m build` took this one and `rotobot_nuke.__version__`
+# reported the other. The v0.4.0 tag was cut without touching either and built
+# rotobot_nuke-0.3.0, which PyPI would have rejected as a duplicate; the tag
+# name never reaches the build.
+dynamic = ["version"]
 description = "Import Rotobot-Next lozenge_bezier_anim JSON into The Foundry's Nuke as a Roto node."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -36,6 +42,13 @@ dev = ["pytest>=7"]
 
 [project.scripts]
 rotobot-undersample = "rotobot_nuke.undersample:_cli"
+
+[tool.setuptools.dynamic]
+# Points at the _version submodule, not at the package's own __version__ re-
+# export: setuptools can read a bare literal assignment statically, so the
+# build never has to import rotobot_nuke. __init__.py is pure Python today,
+# but it would only take one `import nuke` creeping in to break every build.
+version = { attr = "rotobot_nuke._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
