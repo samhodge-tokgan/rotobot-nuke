@@ -38,10 +38,12 @@ from .undersample import (
 )
 
 from . import cache  # noqa: E402  (import-cache helpers; `from rotobot_nuke import cache`)
+from . import hierarchy  # noqa: E402  (camera/person/part decomposition; no nuke import)
 
 __all__ = [
     "__version__",
     "cache",
+    "hierarchy",
     "CameraFrame",
     "DEFAULT_ARTICULATION_TOLERANCE",
     "DEFAULT_CAMERA_TOLERANCE",

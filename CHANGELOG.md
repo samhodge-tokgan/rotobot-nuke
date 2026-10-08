@@ -16,6 +16,30 @@ three-transform cascade import mode (issue #279), the v3 reader
 `PRESET_*` triples, body-local articulation metric, and the
 `rotobot-undersample` CLI with per-level tolerance flags. Full details
 below.
+### Added — host-agnostic hierarchy core (`rotobot_nuke.hierarchy`, #279)
+- `decompose(doc)` splits every knot of a v3 document into
+  `plate = T1(T2(T3(local)))`: T1 the camera as the **exact** ECC
+  homography (not reduced to an affine — on a real 4K clip the affine
+  reduction was off by up to 236 px at the plate corners), T2 the person's
+  pelvis in stabilised pixels, T3 the body part (bone pt0 relative to the
+  pelvis, plus the bone angle, unwrapped), and the knots and tangent
+  handles in bone-local pixels.
+- No `nuke` import: the After Effects and Silhouette converters use it.
+- Missing or bad data is held at the last good value, never replaced by
+  identity or the origin: `ecc-failed` cameras, `identity` cameras after
+  the track has started, absent camera/person frames, `pelvis_px == [0,0]`
+  and frames without a bone. Holds are listed in `Hierarchy.held`.
+- T1 and T2 are keyed on every frame of the range, so a host never
+  interpolates a value the knots were not computed with.
+- `round_trip_error(doc, hier)` re-composes the hierarchy and reports the
+  worst plate-pixel error; writers emit only within
+  `ROUND_TRIP_TOLERANCE_PX` (0.05). `corner_pin(H, w, h)` gives the four
+  corners that reproduce H in a host's corner-pin transform.
+- New fixture `tests/fixtures/v3_real_cut.json`, cut from a real v0.10.0
+  run (projective camera, real pelvis track).
+- Not yet used by this package's own Nuke importer, whose hierarchical
+  mode still uses the affine reduction and treats missing frames as
+  identity; moving it onto this core is a follow-up.
 
 ### Added — `.nk` curves-knob import cache
 - New `rotobot_nuke.cache` module. When `build_roto(..., cache_path=...)`
