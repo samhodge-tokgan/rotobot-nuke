@@ -14,6 +14,13 @@ coordinates). Frames whose state vector is a close linear
 interpolation of its neighbours are discarded; the remaining
 keyframes still describe the full motion to within ``tolerance``.
 
+"A close linear interpolation of its neighbours" means linear **in
+time**, which is what a host reconstructs between two keyframes. The
+RDP pass measures exactly that. It previously measured perpendicular
+distance to the chord in state space, which ignores the time
+parameterisation, and so could not tell motion that retraces its own
+path apart from motion that had stopped -- see :func:`rdp_reduction`.
+
 The algorithm is a direct port of the ``key_reduction`` branch of
 ``tokgan_silhouette_import``
 (https://github.com/samhodge-aiml/tokgan_silhouette_import/tree/key_reduction),
@@ -91,6 +98,16 @@ DEFAULT_TOLERANCE = TOLERANCE_BALANCED
 # Values retuned from a 4-clip cross-clip sweep on real UHD footage
 # (see benchmarks/real_results_cross_clip.md). Measured retention:
 #
+# NOTE: the retention figures below PREDATE the time-axis and rotation-unit
+# fixes to the articulation metric, and will have moved -- the metric they
+# were measured against no longer exists. They are kept because they are
+# still the record of how the triples were chosen and of how tightly the
+# three clips agreed, but the sweep needs re-running on the same four plates
+# before anyone treats them as current. The ORDERING is sound either way
+# (fine keeps more than balanced keeps more than coarse, now on single-mode
+# motion too, which is what the fixes bought); it is the absolute percentages
+# that are stale.
+#
 #   FINE     (0.5, 1.0, 0.015)   98.1% mean,  3.2 pp spread
 #   BALANCED (1.0, 2.0, 0.05)    89.4% mean,  3.0 pp spread    <-- default
 #   COARSE   (2.5, 5.0, 0.1)     72.6% mean, 15.4 pp spread
@@ -121,70 +138,89 @@ DEFAULT_ARTICULATION_TOLERANCE = PRESET_BALANCED.articulation_tolerance
 
 
 def rdp_reduction(points: Sequence[Sequence[float]], tolerance: float) -> List[int]:
-    """Ramer-Douglas-Peucker for an N-dimensional polyline.
+    """Ramer-Douglas-Peucker for an N-dimensional polyline SAMPLED IN TIME.
+
+    The error measured is the deviation of each dropped sample from the
+    **linear-in-time interpolation** between its retained neighbours -- not
+    the perpendicular distance to the chord in state space.
+
+    That distinction is the whole point. These samples are one per video
+    frame, and what a host reconstructs between two keyframes is a linear
+    ramp **in time**. Measuring perpendicular distance instead treats the
+    samples as an unparameterised curve, so motion that retraces its own
+    path becomes geometrically indistinguishable from standing still: a
+    rigid limb swinging +/-30deg varies only in the bone-angle component,
+    traces a 1-D segment back and forth, and every interior sample projects
+    exactly onto the chord with zero perpendicular distance. The tolerance
+    then has NO EFFECT -- 6 extrema were kept at every preset, and the
+    reconstruction was 20.8px out at the wrist on a 4K plate. Pure
+    translation and pure uniform deform fail the same way, and so does any
+    motion driven by a single time-varying scalar.
+
+    With the time axis respected, ``tolerance`` means what this module has
+    always documented: "the remaining keyframes still describe the full
+    motion to within ``tolerance``".
 
     Args:
-        points: ordered sequence of state vectors — each is a sequence
-            of floats, all the same length.
-        tolerance: maximum perpendicular distance (in state-vector
-            units) from a kept point to the line connecting its
-            retained neighbours.
+        points: ordered sequence of state vectors, one per frame -- each a
+            sequence of floats, all the same length. ORDER IS TIME, and
+            samples are assumed evenly spaced (one per frame).
+        tolerance: maximum deviation (in state-vector units) of any dropped
+            sample from the linear-in-time interpolation between the
+            retained samples either side of it.
 
     Returns:
-        Sorted list of indices into ``points`` for the retained
-        vertices. Always includes the first and last indices when
-        ``points`` is non-empty.
+        Sorted list of indices into ``points`` for the retained vertices.
+        Always includes the first and last indices when ``points`` is
+        non-empty.
     """
-    if not points:
+    n = len(points)
+    if n == 0:
         return []
-    if len(points) < 3:
-        return list(range(len(points)))
+    if n < 3:
+        return list(range(n))
     if tolerance <= 0:
-        return list(range(len(points)))
+        return list(range(n))
 
-    def _dim(v):
-        return len(v)
+    width = len(points[0])
+    keep = [0, n - 1]
+    # Iterative rather than recursive: a long clip is thousands of frames
+    # and the recursive form could reach Python's stack limit on a signal
+    # that splits all the way down.
+    stack = [(0, n - 1)]
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo < 2:
+            continue
+        a = points[lo]
+        b = points[hi]
+        span = hi - lo
+        worst = 0.0
+        pivot = -1
+        for i in range(lo + 1, hi):
+            t = (i - lo) / span
+            p = points[i]
+            acc = 0.0
+            for j in range(width):
+                d = p[j] - (a[j] + t * (b[j] - a[j]))
+                acc += d * d
+            dist = math.sqrt(acc)
+            if dist > worst:
+                worst = dist
+                pivot = i
+        if worst > tolerance and pivot > 0:
+            keep.append(pivot)
+            stack.append((lo, pivot))
+            stack.append((pivot, hi))
 
-    width = _dim(points[0])
-
-    start = list(points[0])
-    end = list(points[-1])
-    line_vec = [end[i] - start[i] for i in range(width)]
-    line_len_sq = sum(c * c for c in line_vec)
-
-    max_dist = 0.0
-    pivot = -1
-    for i in range(1, len(points) - 1):
-        p = points[i]
-        if line_len_sq == 0.0:
-            diff = [p[j] - start[j] for j in range(width)]
-            dist = math.sqrt(sum(c * c for c in diff))
-        else:
-            dot = sum(
-                (p[j] - start[j]) * line_vec[j] for j in range(width)
-            )
-            t = max(0.0, min(1.0, dot / line_len_sq))
-            proj = [start[j] + t * line_vec[j] for j in range(width)]
-            diff = [p[j] - proj[j] for j in range(width)]
-            dist = math.sqrt(sum(c * c for c in diff))
-        if dist > max_dist:
-            max_dist = dist
-            pivot = i
-
-    if max_dist > tolerance and pivot > 0:
-        left = rdp_reduction(points[: pivot + 1], tolerance)
-        right = rdp_reduction(points[pivot:], tolerance)
-        # Left's last index == pivot in local indices; right's first == 0 (also pivot).
-        # Rebase right-side indices and dedupe the shared pivot.
-        combined = left[:-1] + [pivot + idx for idx in right]
-        return combined
-    return [0, len(points) - 1]
+    return sorted(keep)
 
 
 def _state_vector_for_frame(
     frame: LozengeFrame,
     pelvis_px: Optional[Tuple[float, float]] = None,
     body_scale: float = 1.0,
+    angle_radians: bool = False,
 ) -> Sequence[float] | None:
     """Encode one frame as an N-dim state vector.
 
@@ -204,8 +240,20 @@ def _state_vector_for_frame(
     which shrinks with camera distance exactly as the actor does — a
     tolerance expressed in units of ``body_scale`` means the same
     "amount of articulation" for a near actor and a far actor in the
-    same shot, and the same across body parts of one person. Rotation
-    is already scale-invariant, so it's left in degrees.
+    same shot, and the same across body parts of one person.
+
+    ``angle_radians`` selects the unit of the rotation component, and
+    defaults to DEGREES because that is what the legacy pixel metric was
+    tuned against. The hierarchical path passes True, because degrees are
+    not commensurate with the dimensionless spatial terms beside them: an
+    angle in radians times the body radius IS the arc displacement it
+    produces at the body's edge, so in body-radius units the radian value
+    already equals that displacement. Degrees overstate the same motion by
+    57x, which let the rotation component saturate the metric whenever a
+    bone rotated at all and made the body-radius normalisation decorative
+    -- with an articulation tolerance of 0.015-0.1, degrees meant "a
+    twentieth of a degree", which no real bone satisfies, so every preset
+    kept the same frames.
 
     Returns ``None`` if the frame has no ``bone`` or no points.
     """
@@ -228,7 +276,9 @@ def _state_vector_for_frame(
     uy = (-ux[1], ux[0])
     # Negated to match the port source — direction of frame rotation
     # relative to bone-local X.
-    angle = -math.degrees(math.atan2(dy, dx))
+    angle = -math.atan2(dy, dx)
+    if not angle_radians:
+        angle = math.degrees(angle)
 
     s = body_scale if body_scale > 0 else 1.0
 
@@ -448,6 +498,7 @@ def _hierarchical_undersample(
                 obj.frames[f],
                 pelvis_px=pelvis_by_frame.get(f),
                 body_scale=scale,
+                angle_radians=True,
             )
             if sv is None:
                 bone_ok = False

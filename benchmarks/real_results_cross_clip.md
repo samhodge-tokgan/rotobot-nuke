@@ -1,5 +1,13 @@
 # Real-plate hierarchical-undersampler — cross-clip aggregate
 
+> **STALE — measured before the articulation metric was fixed.** Every number
+> on this page was produced by the pre-fix metric, which measured perpendicular
+> distance to the chord in state space (no time axis) and carried rotation in
+> degrees alongside body-radius fractions. Both are fixed, so these retention
+> percentages no longer describe the shipped behaviour and the sweep needs
+> re-running on the same four plates. The page is kept as the record of how the
+> preset triples were chosen. The preset *ordering* still holds.
+
 Four UHD clips from the PR #1 wedge sweep, each run through the full `rotobot_next` pipeline (Phase A + Phase A2 merged) on skylab. 60-frame slice per clip (`--first 1 --last 60`; actual output frames per clip may be smaller due to the known `rotobot_next` 60→N discrepancy, tracked separately).
 
 ## Clip provenance
