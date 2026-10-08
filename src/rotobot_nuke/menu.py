@@ -1,12 +1,14 @@
 """Nuke menu hook. Add a "Rotobot" menu with roto-JSON import commands.
 
-Install (one of):
+Install: add this line to ``~/.nuke/menu.py`` (or a facility ``menu.py`` on
+``NUKE_PATH``)::
 
-* ``~/.nuke/init.py`` adds::
+    import rotobot_nuke.menu
 
-      import rotobot_nuke.menu
-
-* or copy this file to your ``NUKE_PATH`` as ``menu.py``.
+``menu.py`` rather than ``init.py``: Nuke runs ``init.py`` in terminal
+sessions too (``nuke -t``, render farm), where there is no menu bar to add
+to. Import the package; do not copy this file on its own, because it uses
+relative imports.
 
 The menu lives under the Nuke menubar (not inside File → Import) so it
 sits next to other third-party integrations that follow the same
