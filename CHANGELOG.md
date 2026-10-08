@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-09
+
+### Fixed
+
+- **The undersampler's tolerance now actually governs the reduction.** Two
+  defects in the articulation metric meant the `fine` / `balanced` / `coarse`
+  presets produced *identical* output on the most common motion in roto, and
+  the tolerance had no effect at all (#16).
+
+  `rdp_reduction` measured perpendicular distance to the start→end chord *in
+  state space*, with no time axis — ignoring that the samples are one per
+  video frame and that a host reconstructs a linear ramp *in time* between two
+  keyframes. Motion driven by a single time-varying scalar traces a 1-D segment
+  back and forth, so every interior sample projected onto the chord with zero
+  distance and read as stationary. A rigid forearm swinging ±30° over 48 frames
+  varies only in its bone-angle component: it kept 6 keyframes — the two ends
+  and the four turning points — at *every* tolerance from 0.5 to 25,
+  reconstructing 20.8px out at the wrist on a 4K plate. Pure translation and
+  pure uniform deformation failed identically. Monotonic motion was always
+  correct, and motion mixing two or more independent modes was fine, which is
+  why the real-plate sweep looked healthy.
+
+  Separately, the articulation state vector divided every spatial term by the
+  person's body radius to get a dimensionless fraction but left rotation in
+  **degrees**. A 1° bone rotation is `0.017` in radians — inside every preset —
+  but `1.0` in degrees, ten times outside the coarsest, and whichever component
+  is largest governs the vector. Rotation is now carried in radians on the
+  hierarchical path, which is commensurate: radians × body radius *is* the arc
+  displacement at the body's edge.
+
+### Changed
+
+- **Reduction output changes for anyone already using the presets.** This is a
+  behaviour change, not just a bug fix: clips that previously collapsed to
+  their extrema now retain the keyframes the tolerance asks for. On the rigid
+  ±30° swing: 32 / 14 / 12 keyframes across fine / balanced / coarse, where all
+  three previously kept 6. Re-check any saved preset choice.
+- The legacy single-tolerance path is deliberately unchanged — its rotation
+  term stays in degrees, behind an explicit `angle_radians=False` default,
+  because the `TOLERANCE_*` constants (2 / 5 / 10 / 25) were tuned against it.
+- The version is now read from `rotobot_nuke.__version__` rather than being
+  duplicated in `pyproject.toml`.
+
+### Known issues
+
+- The 4-clip retention figures in `benchmarks/real_results_cross_clip.md` and
+  in the `PRESET_*` comments (98.1% / 89.4% / 72.6%) were measured against the
+  metric this release replaces and are **stale** — marked as such in both
+  places. The sweep needs re-running on the same four plates before those
+  percentages are quoted again. The preset *ordering* holds.
+- The tolerance bounds the bone-local state vector, while hosts interpolate
+  control points in screen space. On a fast rotation the kept keys satisfy the
+  angle tolerance exactly, yet the host joins them with a straight line that
+  cuts the chord of the arc — on the ±30° swing at `fine`, 2.3px of
+  angle-attributable error and a further 10.4px of chord error, matching
+  `r*(1-cos(dθ/2))`. So `fine` is not pixel-fine where a limb moves quickly.
+
+
 ## [0.3.0] — 2026-10-08
 
 First PyPI release. Bundles all the work shipped since the v0.1.0
