@@ -20,19 +20,40 @@ rather than silently Y-flipping with the wrong height.
 pip install rotobot-nuke
 ```
 
-(The install only pulls Python-stdlib dependencies. The `nuke` module is
-provided by your Nuke install at runtime; it is not fetched from PyPI.)
+Until the first PyPI release, install from GitHub instead:
+
+```bash
+pip install git+https://github.com/samhodge-tokgan/rotobot-nuke
+```
+
+The package is pure Python with no dependencies. The `nuke` module comes from
+your Nuke install at runtime and is not fetched from PyPI. Only the Nuke
+import needs Nuke: reading and undersampling a JSON work in any Python 3.9+
+(see [Reducing keyframes without Nuke](#reducing-keyframes-without-nuke)).
 
 ### Nuke menu entry
 
-Add one line to `~/.nuke/init.py` (or your facility `init.py`):
+Add one line to `~/.nuke/menu.py` (or your facility `menu.py`):
 
 ```python
-import rotobot_nuke.menu  # registers "File → Import → Rotobot JSON…"
+import rotobot_nuke.menu  # adds a "Rotobot" menu to Nuke's menu bar
 ```
 
-If `rotobot-nuke` is pip-installed to the same Python Nuke uses, that's all
-you need. If Nuke's embedded Python can't see your site-packages, append the
+The **Rotobot** menu then offers:
+
+| Command | What it builds |
+|---|---|
+| Import Rotobot JSON (B-spline)… | a `Roto` node, every frame keyed |
+| Import Rotobot JSON (Bezier)… | the same with Bezier shapes |
+| Import Rotobot JSON — balanced undersample… | B-spline, keyframes reduced at tolerance 5 |
+| Import Rotobot JSON — aggressive undersample… | B-spline, keyframes reduced at tolerance 10 |
+| Import Rotobot JSON — undersample (prompt for tolerance)… | asks for the tolerance |
+
+Each one asks for the JSON and builds a `Roto` node named `Tokgan_Roto`, with
+a `person → body → side → part` layer hierarchy.
+
+If `rotobot-nuke` is installed into the same Python that Nuke uses, that's
+all you need. If Nuke's embedded Python can't see your site-packages, append the
 install prefix explicitly:
 
 ```python
@@ -55,62 +76,123 @@ node = build_roto(doc, curve_type="bspline")   # or "bezier"
 print(node.name())                              # => "Tokgan_Roto" (or Nuke-uniquified)
 ```
 
+#### Camera / person hierarchy (v3 JSON, experimental)
+
+A v3 JSON (Rotobot Next 0.10.0 and later) carries the plate camera and each
+person's pelvis. `mode="hierarchical"` builds nested Roto layers from them:
+
+```python
+node = build_roto(doc, mode="hierarchical")
+# camera_track            the plate camera
+#   p0_pelvis             each person's root
+#     p0:arm:L:forearm    each body part, positioned and rotated by its bone
+```
+
+It is not in the menu yet, for two known reasons:
+
+* the camera layer uses an affine (translate/rotate/scale) approximation of
+  the camera solve, so it does not fully stabilise a shot with perspective;
+* frames with missing camera or pelvis data are not held, so shapes can jump
+  on those frames.
+
+The plate positions of the shapes are still correct. The Silhouette and
+After Effects importers already use the exact camera and hold missing data,
+through `rotobot_nuke.hierarchy`. Moving this importer onto that code is
+planned.
+
 ### Undersampling (RDP keyframe reduction)
 
-Rotobot-Next writes one JSON keyframe per video frame; a 6s UHD clip
-with ~140 segments can emit 8,000+ keyframes that Nuke then has to
-scrub through for every slider nudge. `rotobot-nuke` can trim that
-down with [Ramer-Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
-on bone-local state vectors (algorithm ported from the
-[`key_reduction` branch of `tokgan_silhouette_import`](https://github.com/samhodge-aiml/tokgan_silhouette_import/tree/key_reduction),
-MIT-licensed):
+Rotobot Next writes one keyframe per video frame. A 6 s UHD clip with about
+140 segments can carry 8,000+ keyframes, which an artist then scrubs through
+for every adjustment. `rotobot-nuke` removes the ones a straight line between
+their neighbours already reproduces, using
+[Ramer-Douglas-Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm)
+on each part's bone-local state. The algorithm is ported from the
+[`key_reduction` branch of `tokgan_silhouette_import`](https://github.com/samhodge-aiml/tokgan_silhouette_import/tree/key_reduction)
+(MIT).
+
+#### Reducing keyframes without Nuke
+
+The `rotobot-undersample` command and `undersample_doc()` are pure Python:
+no Nuke needed. They write a smaller JSON that **any** importer reads,
+including the Silhouette `.fxs` and After Effects converters, and their
+camera / person hierarchies.
+
+```bash
+rotobot-undersample shapes.json shapes_reduced.json --preset balanced
+```
+
+Two kinds of setting, used one at a time:
+
+* **`--preset fine | balanced | coarse`** — for v3 JSON. It measures the
+  error in three parts: camera, person root, and each part's motion relative
+  to its body. A camera pan alone therefore does not keep every keyframe.
+  It also works on v2 JSON, where it measures the body-relative part only.
+* **`--tolerance N`** — the original single measurement, in pixel-equivalents
+  (default 5). Works on any schema version.
+
+Measured on a real Rotobot Next 0.10.0 shot (24 4K frames, 38 parts,
+874 keyframes):
+
+| Setting | Keyframes kept |
+|---|---:|
+| `--preset fine` | 100% |
+| `--preset balanced` | 92% |
+| `--preset coarse` | 59% |
+| `--tolerance 5` | 91% |
+| `--tolerance 10` | 73% |
+| `--tolerance 25` | 50% |
+
+Short shots keep proportionally more, because every part keeps its first and
+last frame. Across four longer real clips (see
+[`benchmarks/real_results_cross_clip.md`](benchmarks/real_results_cross_clip.md))
+the presets kept about 98% / 89% / 73%. Review an aggressive reduction
+before handing it on. The camera and person blocks are copied through
+unchanged, and parts with fewer than three frames, or without per-frame
+bones (v1), are left alone.
+
+The `--camera-tolerance`, `--person-tolerance` and `--articulation-tolerance`
+options override one part of a preset, e.g.
+`--preset balanced --articulation-tolerance 0.1`.
+
+From Python:
+
+```python
+from rotobot_nuke import load_json, undersample_doc, PRESET_BALANCED
+
+doc = load_json("shapes.json")
+reduced = undersample_doc(doc, **PRESET_BALANCED._asdict())   # or tolerance=5.0
+```
+
+#### Reducing keyframes while importing into Nuke
+
+The menu's *undersample* commands do this as part of the import, and so does
+`build_roto`:
 
 ```python
 from rotobot_nuke import load_json, build_roto, TOLERANCE_BALANCED
 
-doc = load_json("/path/to/clip.json")
-build_roto(doc, undersample_tolerance=TOLERANCE_BALANCED)      # 5.0
+build_roto(load_json("shapes.json"), undersample_tolerance=TOLERANCE_BALANCED)   # 5.0
 ```
 
-Or operate on the parsed doc directly:
+This uses the single `--tolerance` measurement. For a preset, reduce the JSON
+first, then import the reduced file. Building the Roto node needs Nuke
+(including `nuke -t`): it imports `nuke.rotopaint`, which only exists in
+Nuke's bundled Python.
 
-```python
-from rotobot_nuke import undersample_doc
+#### Tolerance values
 
-reduced = undersample_doc(doc, tolerance=5.0)
-```
-
-Or filter a JSON file to a new JSON file via the console script:
-
-```bash
-rotobot-undersample input.json output.json --tolerance 5
-```
-
-#### Tolerance presets
-
-Picked from a wedge sweep across four real UHD/HD Rotobot-Next outputs
-(1.1 MB → 57.9 MB; 126 → 8,198 keyframes). Units are mixed pixel +
-degree — the state-vector norm is dominated by bone-origin pixel
-coordinates on typical plates, so `tolerance = n` is roughly "keep a
-frame if any aspect of its state vector diverged by `n`
-pixel-equivalents from a linear interpolation of its retained
-neighbours."
-
-| Preset | Value | Keyframes kept (observed on real data) |
+| Constant | Value | Keyframes kept (four real UHD/HD clips) |
 |---|---:|---|
-| `TOLERANCE_CONSERVATIVE` | 2.0 | ≥99% — barely trims |
-| `TOLERANCE_BALANCED` (default) | 5.0 | 87–99% kept — useful mid-ground |
-| `TOLERANCE_AGGRESSIVE` | 10.0 | ~75% kept — faster scrubs, still coarse-faithful |
-| `TOLERANCE_VERY_AGGRESSIVE` | 25.0 | 45–80% kept — artist review recommended |
+| `TOLERANCE_CONSERVATIVE` | 2.0 | 99% or more: barely trims |
+| `TOLERANCE_BALANCED` (default) | 5.0 | 87–99%: a useful middle ground |
+| `TOLERANCE_AGGRESSIVE` | 10.0 | about 75%: faster to scrub, still close |
+| `TOLERANCE_VERY_AGGRESSIVE` | 25.0 | 45–80%: review before use |
 
-Static-pose captures (few keyframes per object) are left alone; the
-algorithm needs 3+ frames to find anything to drop. Objects that
-lack per-frame `bone` endpoints (v1 schema, or v2 captures that
-didn't record them) are also left untouched.
-
-Running this from `nuke -t` works; running it outside Nuke does not — it
-imports `nuke.rotopaint`, which only exists inside The Foundry's bundled
-Python.
+The unit mixes pixels and degrees, and bone-origin pixel positions dominate it
+on a typical plate. So `tolerance = n` roughly means: keep a frame if any part
+of its state is more than `n` pixel-equivalents away from a straight line
+between the frames kept either side of it.
 
 ## What it imports
 
