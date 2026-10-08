@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-08
+
+First PyPI release. Bundles all the work shipped since the v0.1.0
+scaffold: the `.nk` curves-knob import cache, the hierarchical
+three-transform cascade import mode (issue #279), the v3 reader
+(camera + persons blocks) and composed-tolerance undersampler, retuned
+`PRESET_*` triples, body-local articulation metric, and the
+`rotobot-undersample` CLI with per-level tolerance flags. Full details
+below.
 ### Added — host-agnostic hierarchy core (`rotobot_nuke.hierarchy`, #279)
 - `decompose(doc)` splits every knot of a v3 document into
   `plate = T1(T2(T3(local)))`: T1 the camera as the **exact** ECC
