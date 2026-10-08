@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-08
+
+First PyPI release. Bundles all the work shipped since the v0.1.0
+scaffold: the `.nk` curves-knob import cache, the hierarchical
+three-transform cascade import mode (issue #279), the v3 reader
+(camera + persons blocks) and composed-tolerance undersampler, retuned
+`PRESET_*` triples, body-local articulation metric, and the
+`rotobot-undersample` CLI with per-level tolerance flags. Full details
+below.
+
 ### Added — `.nk` curves-knob import cache
 - New `rotobot_nuke.cache` module. When `build_roto(..., cache_path=...)`
   is called, the roto's `curves` knob text is written under

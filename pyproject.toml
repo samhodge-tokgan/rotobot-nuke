@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rotobot-nuke"
-version = "0.1.0"
+version = "0.3.0"
 description = "Import Rotobot-Next lozenge_bezier_anim JSON into The Foundry's Nuke as a Roto node."
 readme = "README.md"
 requires-python = ">=3.9"
