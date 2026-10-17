@@ -119,8 +119,9 @@ class TestControlPointsAndKeyframes:
     ):
         """Y should flip against doc.resolution[1] (1080), not Nuke project
         format. First point in v2_small is (100, 200) → (100, 880)."""
+        # Bezier mode writes the points as given (bspline mode writes control points -- see below).
         doc = load_json(fixtures_dir / "v2_small.json")
-        build_roto(doc)
+        build_roto(doc, curve_type="bezier")
         shape = next(_collect_shapes(fake_nuke.nodes.created[0]["curves"].rootLayer))
         H = doc.resolution[1]
         assert H == 1080
@@ -133,10 +134,34 @@ class TestControlPointsAndKeyframes:
         self, fake_nuke, fixtures_dir
     ):
         doc = load_json(fixtures_dir / "v2_small.json", resolution=(1920, 2160))
-        build_roto(doc)
+        build_roto(doc, curve_type="bezier")
         shape = next(_collect_shapes(fake_nuke.nodes.created[0]["curves"].rootLayer))
         # First point y=200 → 2160-200=1960 (not 1080-200=880)
         assert shape.points[0].initial == (100.0, 1960.0)
+
+    def test_bspline_mode_curve_passes_through_the_points(self, fake_nuke, fixtures_dir):
+        """Nuke's bspline is a closed uniform cubic B-spline: the curve at control point i is
+        (C[i-1] + 4 C[i] + C[i+1]) / 6. The importer writes control points so that this equals the
+        JSON's (y-flipped) points -- writing the points themselves pulled shapes inside the matte."""
+        doc = load_json(fixtures_dir / "v2_small.json")
+        build_roto(doc, curve_type="bspline")
+        shape = next(_collect_shapes(fake_nuke.nodes.created[0]["curves"].rootLayer))
+        H = doc.resolution[1]
+        C = [cp.initial for cp in shape.points]
+        n = len(C)
+        obj = next(iter(doc.objects.values()))
+        first = obj.frames[min(obj.frames)]
+        for i, p in enumerate(first.points):
+            cx = (C[i - 1][0] + 4 * C[i][0] + C[(i + 1) % n][0]) / 6
+            cy = (C[i - 1][1] + 4 * C[i][1] + C[(i + 1) % n][1]) / 6
+            assert abs(cx - p.x) < 1e-6 and abs(cy - (H - p.y)) < 1e-6
+
+    def test_no_root_offset_is_keyed(self, fake_nuke, fixtures_dir):
+        """A (+1, -1) px root translation put every shape ~1.4 px off the matte."""
+        import inspect
+        from rotobot_nuke import importer
+        src = inspect.getsource(importer)
+        assert "addKey(0, 1.0)" not in src and "addKey(0, -1.0)" not in src
 
     def test_bspline_mode_does_not_write_tangent_keyframes(
         self, fake_nuke, fixtures_dir
