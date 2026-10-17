@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Tuple
 import nuke
 import nuke.rotopaint
 
+import dataclasses
+
 from .reader import CameraFrame, LozengeDoc, LozengeFrame, LozengeObject, PersonFrame
 from .undersample import undersample_doc
 
@@ -123,11 +125,9 @@ def _build_roto_legacy(doc: LozengeDoc, roto_name: str, curve_type: str):
     curves = roto["curves"]
     root = curves.rootLayer
 
-    # Historical +1/-1 identity translation on the root transform.
-    trans = root.getTransform()
-    trans.getTranslationAnimCurve(0).addKey(0, 1.0)
-    trans.getTranslationAnimCurve(1).addKey(0, -1.0)
-    curves.changed()
+    # No root offset: a historical (+1, -1) px translation was keyed here. Measured through Nuke 16's own
+    # evaluation against the source matte (Rotobot-Next, 5362065, 2026-10-17) it put every shape ~1.4 px
+    # off. The JSON is in plate pixels already.
 
     for obj_name, obj in doc.objects.items():
         person, region, side, part = _parse_object_name(obj_name)
@@ -316,8 +316,7 @@ def _build_roto_hierarchical(
     # Historical identity translate on the root transform (kept for
     # bit-identity with legacy's root).
     root_xform = root.getTransform()
-    root_xform.getTranslationAnimCurve(0).addKey(0, 1.0)
-    root_xform.getTranslationAnimCurve(1).addKey(0, -1.0)
+    # (no +1/-1 root offset -- see _build_roto_legacy)
     curves.changed()
 
     # ---- T1: camera_track Layer with per-frame H2d-decomposed affine.
@@ -499,6 +498,47 @@ def _label_roto(roto, doc: LozengeDoc, hierarchical: bool = False) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# B-spline control points
+# ---------------------------------------------------------------------------
+#
+# Nuke's rotopaint "bspline" is a closed UNIFORM CUBIC B-spline (measured through shape.evaluate in
+# Nuke 16: an 8-point circle of radius 200 draws at 180.47 = (C[i-1] + 4 C[i] + C[i+1]) / 6). Its
+# control points are NOT on the curve, so writing the JSON's on-curve points as B-spline points pulled
+# every shape inside the matte (up to 10.4 px on real shapes). In bspline mode the importer now writes
+# the control points whose curve passes THROUGH the JSON's points. For a shape the engine fitted as a
+# B-spline ("spline": "bspline3_uniform_closed") those points are exactly (C[i-1] + 4 C[i] + C[i+1])/6,
+# so this recovers its control points exactly -- Nuke draws the fitted curve; for any other shape the
+# curve interpolates its knots.
+
+
+def interpolating_control_points(points: List[Tuple[float, float]], iters: int = 60) -> List[Tuple[float, float]]:
+    """Closed uniform cubic B-spline control points C with (C[i-1] + 4 C[i] + C[i+1]) / 6 = P[i].
+    Jacobi iteration on a strictly diagonally dominant system (error halves per step); plain Python."""
+    n = len(points)
+    if n < 3:
+        return list(points)
+    C = [tuple(p) for p in points]
+    for _ in range(iters):
+        C = [((6 * points[i][0] - C[i - 1][0] - C[(i + 1) % n][0]) / 4.0,
+              (6 * points[i][1] - C[i - 1][1] - C[(i + 1) % n][1]) / 4.0) for i in range(n)]
+    return C
+
+
+def bspline_control_doc(doc: LozengeDoc) -> LozengeDoc:
+    """A copy of ``doc`` whose frame points are the B-spline control points that pass through them."""
+    objects = {}
+    for key, obj in doc.objects.items():
+        frames = {}
+        for f, fr in obj.frames.items():
+            C = interpolating_control_points([(p.x, p.y) for p in fr.points])
+            pts = [dataclasses.replace(p, x=cx, y=cy, left_x=cx, left_y=cy, right_x=cx, right_y=cy)
+                   for p, (cx, cy) in zip(fr.points, C)]
+            frames[f] = dataclasses.replace(fr, points=pts)
+        objects[key] = dataclasses.replace(obj, frames=frames)
+    return dataclasses.replace(doc, objects=objects)
+
+
 def build_roto(
     doc: LozengeDoc,
     *,
@@ -555,6 +595,9 @@ def build_roto(
     if set_project_fps:
         nuke.root()["fps"].setValue(doc.fps)
 
+    if curve_type == "bspline":
+        doc = bspline_control_doc(doc)
+
     # Cache fast-path. When the cached curves-text exists for this
     # (path, mtime, build-params) tuple, create an empty Roto and
     # install the whole thing with one ``fromScript()`` call.
@@ -565,7 +608,9 @@ def build_roto(
         cache_key = _cache.make_key(
             cache_path,
             mode=mode,
-            curve_type=curve_type,
+            # "@cp2": control points through the shape + no root offset (2026-10-17); older cached
+            # curves must not be reused
+            curve_type=curve_type + "@cp2",
             undersample_tolerance=undersample_tolerance,
         )
         cached_text = _cache.get(cache_key)

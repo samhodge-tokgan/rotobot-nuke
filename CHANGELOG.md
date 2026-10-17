@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **B-spline imports pass through the shape.** Nuke's rotopaint `bspline` is a closed uniform cubic
+  B-spline whose control points are not on the curve. Writing the JSON's on-curve points as B-spline
+  points pulled every shape inside the matte, up to 10.4 px on real shapes (measured through
+  `shape.evaluate`, Nuke 16). In `bspline` mode the importer now writes the control points whose curve
+  passes through the points. For shapes the engine fitted as B-splines, that recovers their control
+  points exactly.
+- **No root offset.** A historical (+1, −1) px root translation put every shape about 1.4 px off.
+- The import cache key carries the new curve revision, so earlier cached curves are not reused.
+
 ## [0.4.0] — 2026-10-09
 
 ### Fixed
