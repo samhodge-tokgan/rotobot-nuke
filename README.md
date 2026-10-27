@@ -76,6 +76,16 @@ node = build_roto(doc, curve_type="bspline")   # or "bezier"
 print(node.name())                              # => "Tokgan_Roto" (or Nuke-uniquified)
 ```
 
+#### Frame numbers
+
+JSON frames are numbered 1..N. A JSON that records `frame_start` (the plate
+frame number of JSON frame 1, e.g. `1001` for `shot.1001.exr`) is keyed on
+the plate's own numbers: JSON frame `f` lands on Nuke frame
+`f + frame_start - 1`, the shape is hidden on `frame_start - 1` and after the
+last frame, and the project's frame range is set to the shot
+(`set_frame_range=False` leaves it alone). A JSON without `frame_start` is
+keyed on 1..N and the project range is not touched.
+
 #### Camera / person hierarchy (v3 JSON, experimental)
 
 A v3 JSON (Rotobot Next 0.10.0 and later) carries the plate camera and each

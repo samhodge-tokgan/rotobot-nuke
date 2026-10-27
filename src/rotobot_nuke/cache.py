@@ -16,9 +16,10 @@ This module caches the result of the first build:
         roto = build_roto(doc, ...)        # slow path, once
         cache.put(roto["curves"].toScript())
 
-The cache key is a hash of the input JSON path, its mtime, and the
-build-parameter triple (mode, curve_type, undersample_tolerance). A
-different mode or tolerance invalidates automatically.
+The cache key is a hash of the input JSON path, its mtime, the
+build-parameter triple (mode, curve_type, undersample_tolerance) and the
+JSON's ``frame_start`` (the cached keys sit on plate frame numbers). A
+different mode, tolerance or frame_start invalidates automatically.
 
 Cache location: ``$XDG_CACHE_HOME/rotobot_nuke/`` (default
 ``~/.cache/rotobot_nuke/``). Each cached entry is a tiny .txt file
@@ -46,6 +47,7 @@ class CacheKey:
     mode: str
     curve_type: str
     undersample_tolerance: Optional[float]
+    frame_start: Optional[int] = None
 
     def digest(self) -> str:
         h = hashlib.sha256()
@@ -59,6 +61,8 @@ class CacheKey:
             else f"{self.undersample_tolerance:.6g}"
         )
         h.update(tol.encode("utf-8"))
+        fs = "none" if self.frame_start is None else str(int(self.frame_start))
+        h.update(f"frame_start={fs}".encode("utf-8"))
         return h.hexdigest()[:16]
 
 
@@ -83,6 +87,7 @@ def make_key(
     mode: str = "legacy",
     curve_type: str = "bspline",
     undersample_tolerance: Optional[float] = None,
+    frame_start: Optional[int] = None,
 ) -> CacheKey:
     """Construct a ``CacheKey`` from a doc path + build parameters.
 
@@ -99,6 +104,7 @@ def make_key(
         mode=mode,
         curve_type=curve_type,
         undersample_tolerance=undersample_tolerance,
+        frame_start=frame_start,
     )
 
 

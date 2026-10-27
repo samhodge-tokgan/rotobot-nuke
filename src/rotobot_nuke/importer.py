@@ -26,7 +26,14 @@ import nuke.rotopaint
 
 import dataclasses
 
-from .reader import CameraFrame, LozengeDoc, LozengeFrame, LozengeObject, PersonFrame
+from .reader import (
+    CameraFrame,
+    LozengeDoc,
+    LozengeFrame,
+    LozengeObject,
+    PersonFrame,
+    source_frame_offset,
+)
 from .undersample import undersample_doc
 
 
@@ -70,8 +77,13 @@ def _build_shape_for_object_legacy(
     part_layer,
     H: int,
     curve_type: str,
+    offset: int = 0,
 ) -> None:
-    """Build one Roto Shape for ``obj`` under ``part_layer`` (legacy mode)."""
+    """Build one Roto Shape for ``obj`` under ``part_layer`` (legacy mode).
+
+    Every key lands on ``JSON frame + offset`` (see
+    :func:`rotobot_nuke.reader.source_frame_offset`).
+    """
     shape = nuke.rotopaint.Shape(curves, type=curve_type)
     shape.name = f"{obj.key}:Shape"
     part_layer.append(shape)
@@ -90,36 +102,38 @@ def _build_shape_for_object_legacy(
         shape.append(cp)
 
     all_frames = sorted(frames.keys())
-    shape.setVisible(all_frames[0] - 1, False)
+    shape.setVisible(all_frames[0] - 1 + offset, False)
     for frame, vis_value in obj.visibility.items():
-        shape.setVisible(frame, bool(vis_value))
-    shape.setVisible(all_frames[-1] + 1, False)
+        shape.setVisible(frame + offset, bool(vis_value))
+    shape.setVisible(all_frames[-1] + 1 + offset, False)
 
     use_bspline = curve_type == "bspline"
     for frame, frame_data in frames.items():
         pts = frame_data.points
+        key = frame + offset
         vis = obj.visibility.get(frame)
         if vis is None:
-            shape.setVisible(frame, False)
+            shape.setVisible(key, False)
         else:
-            shape.setVisible(frame, bool(vis))
+            shape.setVisible(key, bool(vis))
 
         for cp, p in zip(shape, pts):
             x = p.x
             y = H - p.y
-            cp.center.addPositionKey(frame, (x, y))
+            cp.center.addPositionKey(key, (x, y))
             if not use_bspline:
                 lx = p.left_x
                 ly = H - p.left_y
                 rx = p.right_x
                 ry = H - p.right_y
-                cp.leftTangent.addPositionKey(frame, (lx - x, ly - y))
-                cp.rightTangent.addPositionKey(frame, (rx - x, ry - y))
+                cp.leftTangent.addPositionKey(key, (lx - x, ly - y))
+                cp.rightTangent.addPositionKey(key, (rx - x, ry - y))
 
 
 def _build_roto_legacy(doc: LozengeDoc, roto_name: str, curve_type: str):
     """PR #1 flat-hierarchy build path."""
     _, H = doc.resolution
+    offset = source_frame_offset(doc)
 
     roto = nuke.nodes.Roto(name=roto_name)
     curves = roto["curves"]
@@ -160,7 +174,9 @@ def _build_roto_legacy(doc: LozengeDoc, roto_name: str, curve_type: str):
                 side_layer, curves, f"{person}_{part}"
             )
 
-        _build_shape_for_object_legacy(obj, curves, part_layer, H, curve_type)
+        _build_shape_for_object_legacy(
+            obj, curves, part_layer, H, curve_type, offset
+        )
 
     _label_roto(roto, doc)
     return roto
@@ -306,8 +322,13 @@ def _build_roto_hierarchical(
 
     Spline knots at the leaf are stored in bone-local coords; the
     cascaded T1 × T2 × T3 at render time recovers plate pixel space.
+
+    Every key (transforms, visibility, knots) lands on ``JSON frame +
+    offset`` (see :func:`rotobot_nuke.reader.source_frame_offset`); the
+    per-frame lookups stay on JSON frame numbers.
     """
     _, H = doc.resolution
+    offset = source_frame_offset(doc)
 
     roto = nuke.nodes.Roto(name=roto_name)
     curves = roto["curves"]
@@ -332,12 +353,14 @@ def _build_roto_hierarchical(
                 perspective_warn_frames.append(frame)
             yup = _conjugate_h2d_yflip(H2d, H)
             tx, ty, rot_deg, sx, sy = _affine_decompose(yup)
-            _set_layer_affine(camera_layer, frame, tx, ty, rot_deg, sx, sy)
+            _set_layer_affine(
+                camera_layer, frame + offset, tx, ty, rot_deg, sx, sy
+            )
             camera_params_by_frame[frame] = (tx, ty, rot_deg, sx, sy)
     else:
         # v2 doc: T1 stays identity. Still create the Layer so the
         # hierarchy shape is uniform across schemas.
-        _set_layer_affine(camera_layer, 0, 0.0, 0.0, 0.0, 1.0, 1.0)
+        _set_layer_affine(camera_layer, offset, 0.0, 0.0, 0.0, 1.0, 1.0)
 
     def _t1_identity_params():
         return (0.0, 0.0, 0.0, 1.0, 1.0)
@@ -367,13 +390,15 @@ def _build_roto_hierarchical(
                 t1 = camera_params_by_frame.get(frame, _t1_identity_params())
                 # Invert T1 to put pelvis in camera-stabilised coords.
                 px, py = _invert_affine(pelvis_yup[0], pelvis_yup[1], *t1)
-                _set_layer_affine(pelvis_layer, frame, px, py, 0.0, 1.0, 1.0)
+                _set_layer_affine(
+                    pelvis_layer, frame + offset, px, py, 0.0, 1.0, 1.0
+                )
                 pelvis_in_cf_by_frame_pid[(frame, pid)] = (px, py)
                 wrote_any = True
         if not wrote_any:
             # v2 / absent persons data: pelvis stays at identity. Still
             # key one frame so the Transform exists.
-            _set_layer_affine(pelvis_layer, 0, 0.0, 0.0, 0.0, 1.0, 1.0)
+            _set_layer_affine(pelvis_layer, offset, 0.0, 0.0, 0.0, 1.0, 1.0)
 
     # ---- T3: one body-part Layer per object, keyed from bone (pt0, pt1).
     for obj_name, obj in doc.objects.items():
@@ -414,7 +439,8 @@ def _build_roto_hierarchical(
             # Nuke rotation is in degrees, counter-clockwise positive.
             bone_angle_deg = math.degrees(math.atan2(dy, dx))
             _set_layer_affine(
-                part_layer, frame, p0_pf[0], p0_pf[1], bone_angle_deg, 1.0, 1.0
+                part_layer, frame + offset, p0_pf[0], p0_pf[1], bone_angle_deg,
+                1.0, 1.0,
             )
             t3_params_by_frame[frame] = (p0_pf[0], p0_pf[1], bone_angle_deg)
 
@@ -444,19 +470,19 @@ def _build_roto_hierarchical(
             shape.append(cp)
 
         # Visibility — same convention as legacy.
-        shape.setVisible(sorted_frames[0] - 1, False)
+        shape.setVisible(sorted_frames[0] - 1 + offset, False)
         for frame, vis_value in obj.visibility.items():
-            shape.setVisible(frame, bool(vis_value))
-        shape.setVisible(sorted_frames[-1] + 1, False)
+            shape.setVisible(frame + offset, bool(vis_value))
+        shape.setVisible(sorted_frames[-1] + 1 + offset, False)
 
         # Per-frame knot updates (articulation signal — flat whenever
         # the limb shape doesn't change).
         for frame, frame_data in obj.frames.items():
             vis = obj.visibility.get(frame)
             if vis is None:
-                shape.setVisible(frame, False)
+                shape.setVisible(frame + offset, False)
             else:
-                shape.setVisible(frame, bool(vis))
+                shape.setVisible(frame + offset, bool(vis))
 
             t3 = t3_params_by_frame.get(frame)
             if t3 is None:
@@ -470,7 +496,9 @@ def _build_roto_hierarchical(
                 knot_bl = _invert_translate_rotate(
                     knot_pf[0], knot_pf[1], t3[0], t3[1], t3[2]
                 )
-                cp.center.addPositionKey(frame, (knot_bl[0], knot_bl[1]))
+                cp.center.addPositionKey(
+                    frame + offset, (knot_bl[0], knot_bl[1])
+                )
 
     if perspective_warn_frames:
         nuke.tprint(
@@ -485,6 +513,30 @@ def _build_roto_hierarchical(
 
 # ---------------------------------------------------------------------------
 # Common helpers.
+
+def _json_last_frame(doc: LozengeDoc) -> Optional[int]:
+    """The last JSON frame keyed by any object, or ``None`` when none is."""
+    return max((f for obj in doc.objects.values() for f in obj.frames), default=None)
+
+
+def _set_project_frame_range(doc: LozengeDoc) -> None:
+    """Put the project's frame range on the plate's own frame numbers.
+
+    Only when the JSON says what they are (``frame_start``): the timeline
+    then opens on the shot rather than on 1..N with every key off the end.
+    An older JSON without it leaves the project range alone, as before.
+    """
+    last = _json_last_frame(doc)
+    if doc.frame_start is None or last is None:
+        return
+    offset = source_frame_offset(doc)
+    root = nuke.root()
+    # Last first: moving first_frame to 1001 while last_frame is still a
+    # 1-based default would ask for a backwards range on the way there.
+    # JSON frame 1 is frame_start by definition, so the range opens there.
+    root["last_frame"].setValue(last + offset)
+    root["first_frame"].setValue(1 + offset)
+
 
 def _label_roto(roto, doc: LozengeDoc, hierarchical: bool = False) -> None:
     """Set the Roto node's label knob."""
@@ -548,6 +600,7 @@ def build_roto(
     undersample_tolerance: Optional[float] = None,
     mode: str = "legacy",
     cache_path: Optional[str] = None,
+    set_frame_range: bool = True,
 ):
     """Build a Nuke ``Roto`` node from the parsed document and return it.
 
@@ -572,10 +625,20 @@ def build_roto(
             built roto's ``curves`` knob text is cached under
             ``~/.cache/rotobot_nuke/`` on first import, and subsequent
             imports of the same (path, mtime, mode, curve_type,
-            undersample_tolerance) tuple reload the cached text via
+            undersample_tolerance, frame_start) tuple reload the cached text via
             ``fromScript()`` — a measured **188× speedup** on a dense
             323-object UHD plate (82s → 0.44s). The slow Python-API
             build runs once; later imports are near-instant.
+        set_frame_range: when ``True`` (default) and the JSON records
+            ``frame_start``, sets the project's ``first_frame`` /
+            ``last_frame`` to the shot's plate frame numbers. A JSON
+            without ``frame_start`` never touches the project range.
+
+    Frame numbering: JSON frames are 1..N. When the JSON records
+    ``frame_start`` (the plate frame number of JSON frame 1), every key
+    lands on the plate's own numbers -- JSON frame ``f`` on Nuke frame
+    ``f + frame_start - 1`` -- so a shot read from ``shot.1001.exr`` keys
+    1001.. and its hide key sits on 1000. Without it, keys stay on 1..N.
 
     Returns:
         The newly created ``nuke.Node`` (Roto).
@@ -588,6 +651,10 @@ def build_roto(
         raise ValueError(
             f"mode must be 'legacy' or 'hierarchical'; got {mode!r}"
         )
+
+    # Before undersampling, so the range always spans the whole shot.
+    if set_frame_range:
+        _set_project_frame_range(doc)
 
     if undersample_tolerance is not None and undersample_tolerance > 0:
         doc = undersample_doc(doc, tolerance=float(undersample_tolerance))
@@ -612,6 +679,9 @@ def build_roto(
             # curves must not be reused
             curve_type=curve_type + "@cp2",
             undersample_tolerance=undersample_tolerance,
+            # Keys are baked onto plate frame numbers, so a different
+            # frame_start must never reuse them.
+            frame_start=doc.frame_start,
         )
         cached_text = _cache.get(cache_key)
         if cached_text is not None:
