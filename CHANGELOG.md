@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — unreleased
+
 ### Fixed
+- **Keys land on the plate's own frame numbers.** JSON frames are numbered
+  1..N, and a JSON that records `frame_start` says which plate frame JSON
+  frame 1 is. The importer ignored it, so a shot read from `shot.1001.exr`
+  was keyed on 1..N with a hide key on frame 0, and had to be shifted by hand
+  in the Dope Sheet. Every key now lands on `JSON frame + frame_start - 1`:
+  shape knots and Bezier tangents, visibility (the hide keys sit on
+  `frame_start - 1` and one past the end), and in `mode="hierarchical"` the
+  camera, pelvis and body-part transform keys. The undersampled import keys
+  the same way.
+- **The project range follows the shot.** When the JSON records
+  `frame_start`, `build_roto` sets the project's `last_frame` and then
+  `first_frame` to `frame_start .. frame_start + N - 1`. Pass
+  `set_frame_range=False` to leave the project alone. A JSON without
+  `frame_start` keys 1..N and never touches the range, exactly as before.
+- A missing or malformed `frame_start` (a string, a fraction, a negative
+  number, a bool, an infinity or a NaN) is treated as absent.
+- The import cache key includes `frame_start`, so curves cached on one frame
+  numbering are never reused for another.
 - **B-spline imports pass through the shape.** Nuke's rotopaint `bspline` is a closed uniform cubic
   B-spline whose control points are not on the curve. Writing the JSON's on-curve points as B-spline
   points pulled every shape inside the matte, up to 10.4 px on real shapes (measured through
@@ -16,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   points exactly.
 - **No root offset.** A historical (+1, −1) px root translation put every shape about 1.4 px off.
 - The import cache key carries the new curve revision, so earlier cached curves are not reused.
+
+### Added
+- `LozengeDoc.frame_start`, plus `rotobot_nuke.reader.json_frame_start` and
+  `rotobot_nuke.reader.source_frame_offset`.
 
 ## [0.4.0] — 2026-10-09
 

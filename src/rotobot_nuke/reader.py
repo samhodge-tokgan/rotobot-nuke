@@ -23,6 +23,7 @@ project settings do not have to match the plate.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Mapping, Optional, Tuple, Union
@@ -128,6 +129,37 @@ class LozengeDoc:
     camera: Optional[dict] = None
     # v3 (#279): frame -> pid -> PersonFrame
     persons: Optional[dict] = None
+    # Plate frame number of JSON frame 1 (``shot.1001.exr`` -> 1001), or
+    # ``None`` when the JSON does not record it. See :func:`source_frame_offset`.
+    frame_start: Optional[int] = None
+
+
+def json_frame_start(raw: Any) -> Optional[int]:
+    """Validate a JSON ``frame_start`` value: the plate frame number of JSON
+    frame 1, or ``None`` when it is absent or not a usable frame number.
+
+    A usable value is a finite, whole, non-negative number (``1001`` or
+    ``1001.0``). A bool, a string, a fraction, a negative number, an infinity
+    or a NaN is treated as absent rather than throwing every key somewhere
+    unexpected.
+    """
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+            or not math.isfinite(raw) or raw != int(raw) or raw < 0):
+        return None
+    return int(raw)
+
+
+def source_frame_offset(doc: "LozengeDoc") -> int:
+    """Nuke frame = JSON frame + this.
+
+    JSON frames are numbered 1..N. A JSON that carries ``frame_start`` says
+    which plate frame JSON frame 1 is -- 1001 for ``shot.1001.exr`` -- and
+    Nuke reads an image sequence on its own frame numbers, so the keys go
+    there: ``frame_start - 1``. Without it the offset is 0 and JSON frame 1
+    is keyed on frame 1, exactly as before.
+    """
+    fs = doc.frame_start
+    return 0 if fs is None else fs - 1
 
 
 def _as_int(x: Any) -> Optional[int]:
@@ -503,4 +535,5 @@ def load_json(
         person_depth=person_depth,
         camera=camera,
         persons=persons,
+        frame_start=json_frame_start(data.get("frame_start")),
     )
