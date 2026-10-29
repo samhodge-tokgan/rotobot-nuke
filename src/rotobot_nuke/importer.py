@@ -74,6 +74,29 @@ def _split_hand_part(part_name: str):
 # ---------------------------------------------------------------------------
 # Legacy build path (PR #1 shape, unchanged).
 
+def _key_visibility(shape, obj: LozengeObject, offset: int) -> None:
+    """Key ``shape`` visible on the frames the JSON has ``obj`` on, and hidden
+    on the frame before, the frame after, and every frame in between that
+    it is missing from.
+
+    A part that leaves the plate (fingers out of frame) simply has no entry
+    for those frames, and Nuke holds a visibility key until the next one,
+    so without an explicit hidden key on each missing frame the shape stayed
+    on, drifting between its last and next keys. ``obj.visibility`` is the
+    record of which frames the part is on: undersampling drops keyframes
+    from ``obj.frames`` but keeps ``visibility`` whole, so a thinned-out
+    frame stays visible.
+
+    Every key lands on ``JSON frame + offset``.
+    """
+    span = set(obj.frames) | set(obj.visibility)
+    if not span:
+        return
+    for frame in range(min(span) - 1, max(span) + 2):
+        vis = obj.visibility.get(frame)
+        shape.setVisible(frame + offset, False if vis is None else bool(vis))
+
+
 def _build_shape_for_object_legacy(
     obj: LozengeObject,
     curves,
@@ -104,21 +127,12 @@ def _build_shape_for_object_legacy(
         cp = nuke.rotopaint.AnimControlPoint(x, y)
         shape.append(cp)
 
-    all_frames = sorted(frames.keys())
-    shape.setVisible(all_frames[0] - 1 + offset, False)
-    for frame, vis_value in obj.visibility.items():
-        shape.setVisible(frame + offset, bool(vis_value))
-    shape.setVisible(all_frames[-1] + 1 + offset, False)
+    _key_visibility(shape, obj, offset)
 
     use_bspline = curve_type == "bspline"
     for frame, frame_data in frames.items():
         pts = frame_data.points
         key = frame + offset
-        vis = obj.visibility.get(frame)
-        if vis is None:
-            shape.setVisible(key, False)
-        else:
-            shape.setVisible(key, bool(vis))
 
         for cp, p in zip(shape, pts):
             x = p.x
@@ -374,16 +388,10 @@ def _build_roto_hierarchical(
         for k in knots[sorted_frames[0]]:
             shape.append(nuke.rotopaint.AnimControlPoint(*k[0]))
 
-        # Visibility — same convention as legacy.
-        shape.setVisible(sorted_frames[0] - 1 + offset, False)
-        for frame, vis_value in obj.visibility.items():
-            shape.setVisible(frame + offset, bool(vis_value))
-        shape.setVisible(sorted_frames[-1] + 1 + offset, False)
+        _key_visibility(shape, obj, offset)
 
         for frame in sorted_frames:
             key = frame + offset
-            vis = obj.visibility.get(frame)
-            shape.setVisible(key, False if vis is None else bool(vis))
             for cp, k in zip(shape, knots[frame]):
                 cp.center.addPositionKey(key, k[0])
                 if not use_bspline:
@@ -567,9 +575,9 @@ def build_roto(
             cache_path,
             mode=mode,
             # "@cp2": control points through the shape + no root offset (2026-10-17); "h2": the
-            # hierarchy is built on hierarchy.decompose (2026-10-29). Older cached curves must not
-            # be reused
-            curve_type=curve_type + ("@cp2h2" if mode == "hierarchical" else "@cp2"),
+            # hierarchy is built on hierarchy.decompose (2026-10-29); "v2": hidden on frames a
+            # part is missing from (2026-10-30). Older cached curves must not be reused
+            curve_type=curve_type + ("@cp2h2" if mode == "hierarchical" else "@cp2") + "v2",
             undersample_tolerance=undersample_tolerance,
             # Keys are baked onto plate frame numbers, so a different
             # frame_start must never reuse them.
