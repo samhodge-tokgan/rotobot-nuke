@@ -7,7 +7,9 @@ Install: add this line to ``~/.nuke/menu.py`` (or a facility ``menu.py`` on
 
 ``menu.py`` rather than ``init.py``: Nuke runs ``init.py`` in terminal
 sessions too (``nuke -t``, render farm), where there is no menu bar to add
-to. Import the package; do not copy this file on its own, because it uses
+to. If it is imported there anyway, the module skips registration outside
+the GUI rather than failing with ``RuntimeError: not in GUI mode``.
+Import the package; do not copy this file on its own, because it uses
 relative imports.
 
 The menu lives under the Nuke menubar (not inside File → Import) so it
@@ -148,4 +150,6 @@ def register() -> None:
     )
 
 
-register()
+# nuke.menu() raises "not in GUI mode" in terminal sessions.
+if nuke.GUI:
+    register()
