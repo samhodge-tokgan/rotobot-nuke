@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-10-29
+
 ### Fixed
 - `import rotobot_nuke.menu` no longer fails in terminal sessions
   (`nuke -t`, render farm) with `RuntimeError: not in GUI mode`. Outside the
   GUI the module skips menu registration, so an import left in `init.py`
   does not break command-line Nuke. `menu.py` is still the place for it.
 
-## [0.4.1] — unreleased
+## [0.4.1] — 2026-10-27
 
 ### Fixed
 - **Keys land on the plate's own frame numbers.** JSON frames are numbered
