@@ -12,6 +12,10 @@ the GUI rather than failing with ``RuntimeError: not in GUI mode``.
 Import the package; do not copy this file on its own, because it uses
 relative imports.
 
+A v3 JSON (one that carries ``camera`` / ``persons``) imports as a
+``camera_track → pelvis → body-part`` layer hierarchy; anything else, and
+the "flat" command, keys every knot in plate pixels.
+
 The menu lives under the Nuke menubar (not inside File → Import) so it
 sits next to other third-party integrations that follow the same
 convention.
@@ -49,7 +53,9 @@ def _prompt_resolution_fallback(err: MissingResolutionError):
 
 
 def _import_lozenge(
-    curve_type: str, undersample_tolerance: float | None = None
+    curve_type: str,
+    undersample_tolerance: float | None = None,
+    mode: str = "auto",
 ) -> None:
     path = nuke.getFilename("Select Rotobot JSON", "*.json")
     if not path or not os.path.isfile(path):
@@ -74,10 +80,11 @@ def _import_lozenge(
     from .importer import build_roto
 
     try:
-        build_roto(
+        node = build_roto(
             doc,
             curve_type=curve_type,
             undersample_tolerance=undersample_tolerance,
+            mode=mode,
         )
     except Exception as exc:  # pragma: no cover - Nuke-only
         nuke.message(f"Rotobot import failed: {exc}")
@@ -90,7 +97,8 @@ def _import_lozenge(
     )
     nuke.tprint(
         f"[rotobot-nuke] imported {len(doc.objects)} objects from {path} "
-        f"(curve_type={curve_type}, res={doc.resolution}{tol_suffix})"
+        f"({node['label'].value().splitlines()[-1]}, curve_type={curve_type}, "
+        f"res={doc.resolution}{tol_suffix})"
     )
 
 
@@ -100,6 +108,10 @@ def _import_bspline() -> None:
 
 def _import_bezier() -> None:
     _import_lozenge("bezier")
+
+
+def _import_bspline_flat() -> None:
+    _import_lozenge("bspline", mode="legacy")
 
 
 def _import_bspline_undersampled_balanced() -> None:
@@ -136,6 +148,10 @@ def register() -> None:
     # of this module during a Nuke session is safe.
     menu.addCommand("Import Rotobot JSON (B-spline)…", _import_bspline)
     menu.addCommand("Import Rotobot JSON (Bezier)…", _import_bezier)
+    menu.addCommand(
+        "Import Rotobot JSON — flat (no camera/person transforms)…",
+        _import_bspline_flat,
+    )
     menu.addCommand(
         "Import Rotobot JSON — balanced undersample…",
         _import_bspline_undersampled_balanced,

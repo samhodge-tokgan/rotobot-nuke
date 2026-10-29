@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-29
+
+### Added
+- **The menu imports a v3 JSON's camera and person transforms.** A JSON with
+  `camera` / `persons` data now comes in as a `camera_track → pelvis → body
+  part` layer hierarchy, with each shape's knots in its bone's coordinates.
+  Every import command does this, Bezier and undersampled ones included. A
+  new **flat (no camera/person transforms)** command keeps the old
+  plate-pixel import. `build_roto(mode="auto")` makes the same choice.
+- Bezier shapes in hierarchical mode.
+
+### Changed
+- The hierarchical build runs on `rotobot_nuke.hierarchy.decompose`. The
+  camera layer carries the exact homography on its extra matrix, perspective
+  included, instead of a translate/rotate/scale approximation. A frame with a
+  failed camera solve, missing hips or a missing bone holds the last good
+  value instead of jumping to identity. A hierarchy that does not recompose
+  the JSON to within 0.05 px falls back to the flat import, with a message.
+- Hierarchical imports cached by an earlier version are rebuilt.
+
 ## [0.4.2] — 2026-10-29
 
 ### Fixed

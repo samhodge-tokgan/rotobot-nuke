@@ -10,15 +10,17 @@ Two build modes available on :func:`build_roto`:
   hierarchy; every spline knot keyframed at its plate-pixel position.
   Original PR #1 shape.
 * ``mode="hierarchical"`` — three transform-cascaded layers
-  (``camera_track → pelvis → body-part``) carrying H2d / pelvis_px /
-  bone pose respectively, with spline knots stored in bone-local
-  coordinates so the leaf curves move only when articulation
-  genuinely changes. See ``docs/design/hierarchical-import.md``.
+  (``camera_track → pelvis → body-part``) carrying the exact H2d
+  homography / pelvis / bone pose respectively, with spline knots stored
+  in bone-local coordinates so the leaf curves move only when
+  articulation genuinely changes. Built on
+  :func:`rotobot_nuke.hierarchy.decompose`, which holds missing data.
+* ``mode="auto"`` — hierarchical for a v3 JSON with ``camera`` /
+  ``persons`` data, legacy otherwise.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Tuple
 
 import nuke
@@ -26,6 +28,7 @@ import nuke.rotopaint
 
 import dataclasses
 
+from .hierarchy import ROUND_TRIP_TOLERANCE_PX, Hierarchy, decompose, round_trip_error
 from .reader import (
     CameraFrame,
     LozengeDoc,
@@ -219,25 +222,6 @@ def _conjugate_h2d_yflip(H2d: Tuple[float, ...], H: int) -> Tuple[float, ...]:
             FMF[2][0], FMF[2][1], FMF[2][2])
 
 
-def _affine_decompose(H2d_yup: Tuple[float, ...]) -> Tuple[float, float, float, float, float]:
-    """Decompose a Y-up 3x3 affine homography to (tx, ty, rotation_deg, sx, sy).
-
-    The perspective row (p, q) is DROPPED. Callers that care about
-    perspective (fish-eye, extreme-tilt plates) should log a WARNING.
-    """
-    a, b, tx, c, d, ty = H2d_yup[0], H2d_yup[1], H2d_yup[2], H2d_yup[3], H2d_yup[4], H2d_yup[5]
-    rotation_deg = math.degrees(math.atan2(c, a))
-    scale_x = math.hypot(a, c)
-    scale_y = math.hypot(b, d)
-    return tx, ty, rotation_deg, scale_x, scale_y
-
-
-def _perspective_magnitude(H2d: Tuple[float, ...]) -> float:
-    """Length of the (p, q) row of a 3x3 homography — how much
-    perspective the matrix carries. Near-zero on affine ECC output."""
-    return math.hypot(H2d[6], H2d[7])
-
-
 def _set_layer_affine(
     layer,
     frame: int,
@@ -275,57 +259,60 @@ def _set_layer_affine(
         xform.getScaleAnimCurve(1).addKey(frame, scale_y)
 
 
-def _invert_affine(
-    x: float, y: float,
-    tx: float, ty: float,
-    rotation_deg: float,
-    sx: float, sy: float,
-) -> Tuple[float, float]:
-    """Apply the INVERSE of (translate ∘ rotate ∘ scale) to (x, y).
+def _set_layer_matrix(layer, frame: int, M: Tuple[float, ...]) -> None:
+    """Keyframe a Layer's 4x4 extra matrix with a 2D homography ``M``
+    (3x3, row-major, Y-up).
 
-    Forward composition: ``out = T(R(S(in)))``. Inverse: scale⁻¹ then
-    rotate⁻¹ then subtract translate.
+    Nuke stores the extra matrix row-major (element ``4i+j``) and applies
+    it projectively to the layer's children; a 2D homography sits in rows
+    and columns 0, 1 and 3. Measured in Nuke 16.0v8 (2026-10-29) by
+    rendering a shape under a perspective matrix: the transposed layout
+    draws nothing.
     """
-    rx = x - tx
-    ry = y - ty
-    cos_r = math.cos(-math.radians(rotation_deg))
-    sin_r = math.sin(-math.radians(rotation_deg))
-    irx = rx * cos_r - ry * sin_r
-    iry = rx * sin_r + ry * cos_r
-    return (irx / sx if sx else irx, iry / sy if sy else iry)
-
-
-def _invert_translate_rotate(
-    x: float, y: float,
-    tx: float, ty: float,
-    rotation_deg: float,
-) -> Tuple[float, float]:
-    """Apply the inverse of (translate ∘ rotate) to (x, y). Scale = 1."""
-    return _invert_affine(x, y, tx, ty, rotation_deg, 1.0, 1.0)
+    a, b, tx, c, d, ty, p, q, r = M
+    rows = ((a, b, 0.0, tx), (c, d, 0.0, ty), (0.0, 0.0, 1.0, 0.0), (p, q, 0.0, r))
+    xform = layer.getTransform()
+    for i in range(4):
+        for j in range(4):
+            xform.getExtraMatrixAnimCurve(i, j).addKey(frame, rows[i][j])
 
 
 def _build_roto_hierarchical(
-    doc: LozengeDoc, roto_name: str, curve_type: str
+    doc: LozengeDoc, hier: Hierarchy, roto_name: str, curve_type: str
 ) -> "nuke.Node":
-    """Three-transform-cascade build (per docs/design/hierarchical-import.md).
+    """Three-transform-cascade build on :func:`rotobot_nuke.hierarchy.decompose`.
 
     Layer hierarchy:
 
-        root (identity-ish)
-        └── camera_track           T1 = Y-up-conjugated affine of H2d
-            ├── p0_pelvis          T2 = pelvis_px (Y-flipped), per frame
-            │   ├── p0:leg:R:thigh T3 = bone pose (origin + angle)
+        root
+        └── camera_track           T1 = the exact homography H2d (extra matrix)
+            ├── p0_pelvis          T2 = pelvis in stabilised pixels, per frame
+            │   ├── p0:leg:R:thigh T3 = bone origin (rel. pelvis) + bone angle
             │   │   └── Shape      knots in bone-local coords
             │   └── ... (one Layer per body-part, flat under pelvis)
             └── p1_pelvis          same shape for a second person
                 └── ...
 
-    Spline knots at the leaf are stored in bone-local coords; the
-    cascaded T1 × T2 × T3 at render time recovers plate pixel space.
+    ``decompose`` holds missing camera / pelvis / bone frames rather than
+    dropping to identity, so composed plate positions never jump. Its
+    hierarchy is Y-down; Nuke is Y-up. With ``F(x, y) = (x, H - y)`` and
+    ``S = diag(1, -1)``: T1 becomes ``F·H2d·F``, T2 ``F(pelvis)``, T3
+    translates by ``S·t`` and rotates by ``-angle``, and a local knot ``l``
+    becomes ``S·l``.
 
-    Every key (transforms, visibility, knots) lands on ``JSON frame +
-    offset`` (see :func:`rotobot_nuke.reader.source_frame_offset`); the
-    per-frame lookups stay on JSON frame numbers.
+    Nuke evaluates a shape's curve in its layer's space and then maps it
+    through the cascade, so in bspline mode the control points are solved
+    in bone-local space: the drawn curve passes through every JSON point
+    exactly, perspective included. Between points a projected cubic is
+    not the plate-space cubic legacy draws; measured in Nuke 16.0v8
+    (2026-10-29) on ``tests/fixtures/v3_real_cut.json`` the mattes agree
+    to IoU 0.9996 / 1 px (Bezier 0.9999 / 1 px), and to 4 px at ten times
+    that perspective.
+    Solving in plate space and carrying the control points through drew
+    11 px off instead.
+
+    Every key lands on ``JSON frame + offset`` (see
+    :func:`rotobot_nuke.reader.source_frame_offset`).
     """
     _, H = doc.resolution
     offset = source_frame_offset(doc)
@@ -333,141 +320,59 @@ def _build_roto_hierarchical(
     roto = nuke.nodes.Roto(name=roto_name)
     curves = roto["curves"]
     root = curves.rootLayer
-
-    # Historical identity translate on the root transform (kept for
-    # bit-identity with legacy's root).
-    root_xform = root.getTransform()
     # (no +1/-1 root offset -- see _build_roto_legacy)
     curves.changed()
 
-    # ---- T1: camera_track Layer with per-frame H2d-decomposed affine.
+    # ---- T1: camera_track, the exact (Y-up) homography on every frame.
     camera_layer = _get_or_create_layer(root, curves, "camera_track")
-    camera_params_by_frame: Dict[int, Tuple[float, float, float, float, float]] = {}
-    perspective_warn_frames: List[int] = []
-    if doc.camera:
-        for frame, cf in sorted(doc.camera.items()):
-            H2d = cf.H2d if cf.H2d is not None else (
-                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0
-            )
-            if _perspective_magnitude(H2d) > 1e-4:
-                perspective_warn_frames.append(frame)
-            yup = _conjugate_h2d_yflip(H2d, H)
-            tx, ty, rot_deg, sx, sy = _affine_decompose(yup)
-            _set_layer_affine(
-                camera_layer, frame + offset, tx, ty, rot_deg, sx, sy
-            )
-            camera_params_by_frame[frame] = (tx, ty, rot_deg, sx, sy)
-    else:
-        # v2 doc: T1 stays identity. Still create the Layer so the
-        # hierarchy shape is uniform across schemas.
-        _set_layer_affine(camera_layer, offset, 0.0, 0.0, 0.0, 1.0, 1.0)
-
-    def _t1_identity_params():
-        return (0.0, 0.0, 0.0, 1.0, 1.0)
-
-    # ---- T2: one pelvis Layer per person, keyed from persons[f][pid].
-    #        Pelvis_px is a plate-pixel coord (Y-down). To key T2 as the
-    #        pelvis's position inside the camera-stabilised frame, we
-    #        apply T1⁻¹ to the Y-flipped pelvis_px.
-    persons_present = {o.person_id for o in doc.objects.values()}
-    pelvis_layer_by_pid: Dict[int, object] = {}
-    pelvis_in_cf_by_frame_pid: Dict[Tuple[int, int], Tuple[float, float]] = {}
-
-    for pid in sorted(persons_present):
-        pelvis_layer = _get_or_create_layer(
-            camera_layer, curves, f"p{pid}_pelvis"
+    for frame in hier.frames:
+        _set_layer_matrix(
+            camera_layer, frame + offset, _conjugate_h2d_yflip(hier.camera[frame], H)
         )
+
+    # ---- T2: one pelvis Layer per person, in stabilised pixels.
+    pelvis_layer_by_pid: Dict[int, object] = {}
+    for pid in hier.pids:
+        pelvis_layer = _get_or_create_layer(camera_layer, curves, f"p{pid}_pelvis")
         pelvis_layer_by_pid[pid] = pelvis_layer
+        for frame in hier.frames:
+            px, py = hier.pelvis[pid][frame]
+            _set_layer_affine(pelvis_layer, frame + offset, px, H - py)
 
-        wrote_any = False
-        if doc.persons:
-            for frame, per in sorted(doc.persons.items()):
-                pf = per.get(pid)
-                if pf is None:
-                    continue
-                pelvis_px_x, pelvis_px_y = pf.pelvis_px
-                pelvis_yup = (pelvis_px_x, H - pelvis_px_y)
-                t1 = camera_params_by_frame.get(frame, _t1_identity_params())
-                # Invert T1 to put pelvis in camera-stabilised coords.
-                px, py = _invert_affine(pelvis_yup[0], pelvis_yup[1], *t1)
-                _set_layer_affine(
-                    pelvis_layer, frame + offset, px, py, 0.0, 1.0, 1.0
-                )
-                pelvis_in_cf_by_frame_pid[(frame, pid)] = (px, py)
-                wrote_any = True
-        if not wrote_any:
-            # v2 / absent persons data: pelvis stays at identity. Still
-            # key one frame so the Transform exists.
-            _set_layer_affine(pelvis_layer, offset, 0.0, 0.0, 0.0, 1.0, 1.0)
-
-    # ---- T3: one body-part Layer per object, keyed from bone (pt0, pt1).
+    use_bspline = curve_type == "bspline"
     for obj_name, obj in doc.objects.items():
-        pid = obj.person_id
-        pelvis_layer = pelvis_layer_by_pid.get(pid)
-        if pelvis_layer is None:
-            # Object references a pid without a parent — fall back to
-            # placing the body-part layer directly under camera_track.
-            pelvis_layer = camera_layer
-
-        part_layer = _get_or_create_layer(pelvis_layer, curves, obj_name)
-
+        part_layer = _get_or_create_layer(
+            pelvis_layer_by_pid[obj.person_id], curves, obj_name
+        )
         if not obj.frames:
             continue
 
-        # Record T3 params per frame so we can invert them when placing
-        # knots in bone-local coords.
-        t3_params_by_frame: Dict[int, Tuple[float, float, float]] = {}
-        for frame, frame_data in sorted(obj.frames.items()):
-            if frame_data.bone is None:
-                continue
-            (p0x, p0y), (p1x, p1y) = frame_data.bone
-            # Y-flip bone endpoints into Nuke coords.
-            p0_yup = (p0x, H - p0y)
-            p1_yup = (p1x, H - p1y)
-            # Put the bone origin into camera-stabilised coords (apply T1⁻¹).
-            t1 = camera_params_by_frame.get(frame, _t1_identity_params())
-            p0_cf = _invert_affine(p0_yup[0], p0_yup[1], *t1)
-            p1_cf = _invert_affine(p1_yup[0], p1_yup[1], *t1)
-            # Then into pelvis-local coords (apply T2⁻¹). T2 is a pure
-            # translate, so this is just a subtraction.
-            pelvis_cf = pelvis_in_cf_by_frame_pid.get((frame, pid), (0.0, 0.0))
-            p0_pf = (p0_cf[0] - pelvis_cf[0], p0_cf[1] - pelvis_cf[1])
-            p1_pf = (p1_cf[0] - pelvis_cf[0], p1_cf[1] - pelvis_cf[1])
-            # Bone angle in pelvis-local.
-            dx = p1_pf[0] - p0_pf[0]
-            dy = p1_pf[1] - p0_pf[1]
-            # Nuke rotation is in degrees, counter-clockwise positive.
-            bone_angle_deg = math.degrees(math.atan2(dy, dx))
+        # ---- T3: bone origin relative to the pelvis, rotated by the bone.
+        for frame, part in sorted(hier.parts[obj_name].items()):
             _set_layer_affine(
-                part_layer, frame + offset, p0_pf[0], p0_pf[1], bone_angle_deg,
-                1.0, 1.0,
+                part_layer, frame + offset, part.tx, -part.ty, -part.angle
             )
-            t3_params_by_frame[frame] = (p0_pf[0], p0_pf[1], bone_angle_deg)
 
-        # ---- Shape with knots in bone-local coords.
+        # ---- Shape with knots in bone-local coords (Y-up).
+        knots: Dict[int, List[Tuple[Tuple[float, float], ...]]] = {}
+        for frame, pts in hier.knots[obj_name].items():
+            if use_bspline:
+                C = interpolating_control_points([(p.x, p.y) for p in pts])
+                knots[frame] = [((x, -y),) for x, y in C]
+            else:
+                knots[frame] = [
+                    ((p.x, -p.y), (p.left_x - p.x, p.y - p.left_y),
+                     (p.right_x - p.x, p.y - p.right_y))
+                    for p in pts
+                ]
+
         shape = nuke.rotopaint.Shape(curves, type=curve_type)
         shape.name = f"{obj_name}:Shape"
         part_layer.append(shape)
 
-        sorted_frames = sorted(obj.frames.keys())
-        first_frame = sorted_frames[0]
-        first_pts = obj.frames[first_frame].points
-        t3_first = t3_params_by_frame.get(first_frame, (0.0, 0.0, 0.0))
-        for p in first_pts:
-            # Transform the plate-pixel knot into bone-local coords by
-            # applying T1⁻¹, T2⁻¹, T3⁻¹ in sequence.
-            knot_yup = (p.x, H - p.y)
-            t1 = camera_params_by_frame.get(first_frame, _t1_identity_params())
-            knot_cf = _invert_affine(knot_yup[0], knot_yup[1], *t1)
-            pelvis_cf = pelvis_in_cf_by_frame_pid.get(
-                (first_frame, pid), (0.0, 0.0)
-            )
-            knot_pf = (knot_cf[0] - pelvis_cf[0], knot_cf[1] - pelvis_cf[1])
-            knot_bl = _invert_translate_rotate(
-                knot_pf[0], knot_pf[1], t3_first[0], t3_first[1], t3_first[2]
-            )
-            cp = nuke.rotopaint.AnimControlPoint(knot_bl[0], knot_bl[1])
-            shape.append(cp)
+        sorted_frames = sorted(obj.frames)
+        for k in knots[sorted_frames[0]]:
+            shape.append(nuke.rotopaint.AnimControlPoint(*k[0]))
 
         # Visibility — same convention as legacy.
         shape.setVisible(sorted_frames[0] - 1 + offset, False)
@@ -475,36 +380,21 @@ def _build_roto_hierarchical(
             shape.setVisible(frame + offset, bool(vis_value))
         shape.setVisible(sorted_frames[-1] + 1 + offset, False)
 
-        # Per-frame knot updates (articulation signal — flat whenever
-        # the limb shape doesn't change).
-        for frame, frame_data in obj.frames.items():
+        for frame in sorted_frames:
+            key = frame + offset
             vis = obj.visibility.get(frame)
-            if vis is None:
-                shape.setVisible(frame + offset, False)
-            else:
-                shape.setVisible(frame + offset, bool(vis))
+            shape.setVisible(key, False if vis is None else bool(vis))
+            for cp, k in zip(shape, knots[frame]):
+                cp.center.addPositionKey(key, k[0])
+                if not use_bspline:
+                    cp.leftTangent.addPositionKey(key, k[1])
+                    cp.rightTangent.addPositionKey(key, k[2])
 
-            t3 = t3_params_by_frame.get(frame)
-            if t3 is None:
-                continue
-            t1 = camera_params_by_frame.get(frame, _t1_identity_params())
-            pelvis_cf = pelvis_in_cf_by_frame_pid.get((frame, pid), (0.0, 0.0))
-            for cp, p in zip(shape, frame_data.points):
-                knot_yup = (p.x, H - p.y)
-                knot_cf = _invert_affine(knot_yup[0], knot_yup[1], *t1)
-                knot_pf = (knot_cf[0] - pelvis_cf[0], knot_cf[1] - pelvis_cf[1])
-                knot_bl = _invert_translate_rotate(
-                    knot_pf[0], knot_pf[1], t3[0], t3[1], t3[2]
-                )
-                cp.center.addPositionKey(
-                    frame + offset, (knot_bl[0], knot_bl[1])
-                )
-
-    if perspective_warn_frames:
+    if hier.held:
         nuke.tprint(
-            f"[rotobot-nuke] hierarchical import: dropped perspective component "
-            f"from H2d on {len(perspective_warn_frames)} frame(s): "
-            f"{perspective_warn_frames[:8]}{'…' if len(perspective_warn_frames) > 8 else ''}"
+            f"[rotobot-nuke] hierarchical import: held {len(hier.held)} missing "
+            f"camera / pelvis / bone value(s): {hier.held[:8]}"
+            f"{'…' if len(hier.held) > 8 else ''}"
         )
 
     _label_roto(roto, doc, hierarchical=True)
@@ -608,19 +498,21 @@ def build_roto(
         doc: parsed Rotobot JSON (see :func:`rotobot_nuke.reader.load_json`).
         roto_name: name hint for the created Roto node (Nuke uniquifies).
         curve_type: ``"bspline"`` (default) or ``"bezier"``. Bezier mode
-            additionally keyframes tangent handles. **``bezier`` is only
-            supported in ``mode="legacy"``** today; hierarchical mode
-            currently writes bspline shapes only (bezier tangents in
-            bone-local coords is a follow-up).
+            additionally keyframes tangent handles.
         set_project_fps: when ``True``, pokes ``nuke.root()["fps"]`` to the
             doc's FPS. Default ``False``.
         undersample_tolerance: when set to a positive number, run
             :func:`rotobot_nuke.undersample.undersample_doc` with that
             tolerance before building keyframes.
-        mode: ``"legacy"`` (default, PR #1 shape) or ``"hierarchical"``
-            (three transform cascade per issue #279 design doc). The
-            default stays ``"legacy"`` for one release; flip after
-            real-Nuke validation lands.
+        mode: ``"legacy"`` (default, PR #1 shape: every knot keyed in
+            plate pixels), ``"hierarchical"`` (``camera_track → pelvis →
+            body-part`` layers carrying the v3 camera, pelvis and bones;
+            see :func:`_build_roto_hierarchical`) or ``"auto"``
+            (hierarchical when the JSON has v3 ``camera`` / ``persons``
+            data, legacy otherwise -- what the menu uses). A hierarchy
+            that does not recompose the JSON to within
+            :data:`rotobot_nuke.hierarchy.ROUND_TRIP_TOLERANCE_PX` falls
+            back to legacy, with a message.
         cache_path: optional path to the source JSON. When supplied, the
             built roto's ``curves`` knob text is cached under
             ``~/.cache/rotobot_nuke/`` on first import, and subsequent
@@ -647,10 +539,12 @@ def build_roto(
         raise ValueError(
             f"curve_type must be 'bspline' or 'bezier'; got {curve_type!r}"
         )
-    if mode not in {"legacy", "hierarchical"}:
+    if mode not in {"legacy", "hierarchical", "auto"}:
         raise ValueError(
-            f"mode must be 'legacy' or 'hierarchical'; got {mode!r}"
+            f"mode must be 'legacy', 'hierarchical' or 'auto'; got {mode!r}"
         )
+    if mode == "auto":
+        mode = "hierarchical" if (doc.camera or doc.persons) else "legacy"
 
     # Before undersampling, so the range always spans the whole shot.
     if set_frame_range:
@@ -662,9 +556,6 @@ def build_roto(
     if set_project_fps:
         nuke.root()["fps"].setValue(doc.fps)
 
-    if curve_type == "bspline":
-        doc = bspline_control_doc(doc)
-
     # Cache fast-path. When the cached curves-text exists for this
     # (path, mtime, build-params) tuple, create an empty Roto and
     # install the whole thing with one ``fromScript()`` call.
@@ -675,9 +566,10 @@ def build_roto(
         cache_key = _cache.make_key(
             cache_path,
             mode=mode,
-            # "@cp2": control points through the shape + no root offset (2026-10-17); older cached
-            # curves must not be reused
-            curve_type=curve_type + "@cp2",
+            # "@cp2": control points through the shape + no root offset (2026-10-17); "h2": the
+            # hierarchy is built on hierarchy.decompose (2026-10-29). Older cached curves must not
+            # be reused
+            curve_type=curve_type + ("@cp2h2" if mode == "hierarchical" else "@cp2"),
             undersample_tolerance=undersample_tolerance,
             # Keys are baked onto plate frame numbers, so a different
             # frame_start must never reuse them.
@@ -690,12 +582,26 @@ def build_roto(
             _label_roto(roto, doc, hierarchical=(mode == "hierarchical"))
             return roto
 
-    if mode == "legacy":
-        roto = _build_roto_legacy(
-            doc, roto_name=roto_name, curve_type=curve_type
+    hier = None
+    if mode == "hierarchical":
+        hier = decompose(doc)
+        err = round_trip_error(doc, hier)
+        if err > ROUND_TRIP_TOLERANCE_PX:
+            nuke.tprint(
+                f"[rotobot-nuke] hierarchy recomposes the JSON {err:.3f} px off "
+                f"(tolerance {ROUND_TRIP_TOLERANCE_PX} px); importing flat (legacy) instead"
+            )
+            hier = None
+            cache_key = None  # the key says hierarchical
+
+    if hier is not None:
+        roto = _build_roto_hierarchical(
+            doc, hier, roto_name=roto_name, curve_type=curve_type
         )
     else:
-        roto = _build_roto_hierarchical(
+        if curve_type == "bspline":
+            doc = bspline_control_doc(doc)
+        roto = _build_roto_legacy(
             doc, roto_name=roto_name, curve_type=curve_type
         )
 
