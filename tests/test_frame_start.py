@@ -191,7 +191,11 @@ class TestHierarchical:
         camera = _child(root_layer, "camera_track")
         pelvis = _child(camera, "p0_pelvis")
         part = _child(pelvis, "p0:leg:R:thigh")
-        for layer in (camera, pelvis, part):
+        # The camera is the homography on the extra matrix; translate (0, 3)
+        # is its x translation.
+        cam_keys = camera.getTransform().getExtraMatrixAnimCurve(0, 3).anim_keys
+        assert {f for f, _ in cam_keys} == {1000, 1001, 1002}
+        for layer in (pelvis, part):
             xform = layer.getTransform()
             assert {f for f, _ in xform.getTranslationAnimCurve(0).anim_keys} == {
                 1000, 1001, 1002
@@ -201,8 +205,9 @@ class TestHierarchical:
     def test_v2_identity_keys_follow_the_offset(self, fake_nuke):
         node = build_roto(_load(_clip(3, frame_start=1001)), mode="hierarchical")
         camera = _child(node["curves"].rootLayer, "camera_track")
-        tx_keys = camera.getTransform().getTranslationAnimCurve(0).anim_keys
-        assert [f for f, _ in tx_keys] == [1000]
+        tx_keys = camera.getTransform().getExtraMatrixAnimCurve(0, 3).anim_keys
+        # JSON frames 1..3 on plate 1001..1003, identity on each.
+        assert tx_keys == [(1001, 0.0), (1002, 0.0), (1003, 0.0)]
 
     def test_without_frame_start_nothing_changes(self, fake_nuke, fixtures_dir):
         node = build_roto(load_json(fixtures_dir / "v3_small.json"), mode="hierarchical")

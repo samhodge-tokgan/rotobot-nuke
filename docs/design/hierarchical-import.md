@@ -1,7 +1,10 @@
 # Hierarchical Roto import — design
 
-Status: **design review**. Implementation deferred to a follow-up PR
-once this is agreed. Target issue: TBD on `samhodge-tokgan/rotobot-nuke`.
+Status: **implemented** (0.5.0), and the menu's import for v3 JSON. The
+build now runs on `rotobot_nuke.hierarchy.decompose`: T1 is the exact H2d on
+the camera layer's 4x4 extra matrix (not the affine decomposition below), and
+missing camera / pelvis / bone frames are held. Sections below are the
+original design.
 
 ## Motivation
 

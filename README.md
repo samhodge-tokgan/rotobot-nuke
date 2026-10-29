@@ -45,12 +45,16 @@ The **Rotobot** menu then offers:
 |---|---|
 | Import Rotobot JSON (B-spline)… | a `Roto` node, every frame keyed |
 | Import Rotobot JSON (Bezier)… | the same with Bezier shapes |
+| Import Rotobot JSON — flat (no camera/person transforms)… | B-spline, every knot in plate pixels, even for a v3 JSON |
 | Import Rotobot JSON — balanced undersample… | B-spline, keyframes reduced at tolerance 5 |
 | Import Rotobot JSON — aggressive undersample… | B-spline, keyframes reduced at tolerance 10 |
 | Import Rotobot JSON — undersample (prompt for tolerance)… | asks for the tolerance |
 
-Each one asks for the JSON and builds a `Roto` node named `Tokgan_Roto`, with
-a `person → body → side → part` layer hierarchy.
+Each one asks for the JSON and builds a `Roto` node named `Tokgan_Roto`. A v3
+JSON (one with `camera` / `persons` data) comes in as a
+`camera_track → pelvis → body part` hierarchy (see below); anything else, and
+the flat command, as a `person → body → side → part` layer hierarchy with every
+knot keyed in plate pixels.
 
 If `rotobot-nuke` is installed into the same Python that Nuke uses, that's
 all you need. If Nuke's embedded Python can't see your site-packages, append the
@@ -86,29 +90,33 @@ last frame, and the project's frame range is set to the shot
 (`set_frame_range=False` leaves it alone). A JSON without `frame_start` is
 keyed on 1..N and the project range is not touched.
 
-#### Camera / person hierarchy (v3 JSON, experimental)
+#### Camera / person hierarchy (v3 JSON)
 
 A v3 JSON (Rotobot Next 0.10.0 and later) carries the plate camera and each
-person's pelvis. `mode="hierarchical"` builds nested Roto layers from them:
+person's pelvis. The menu builds nested Roto layers from them, and so does
+`mode="hierarchical"` (or `mode="auto"`, which picks it for a v3 JSON):
 
 ```python
-node = build_roto(doc, mode="hierarchical")
-# camera_track            the plate camera
+node = build_roto(doc, mode="auto")
+# camera_track            the plate camera: the exact homography, on the layer's extra matrix
 #   p0_pelvis             each person's root
 #     p0:arm:L:forearm    each body part, positioned and rotated by its bone
+#       Shape             knots in the bone's own coordinates
 ```
 
-It is not in the menu yet, for two known reasons:
+It is built on `rotobot_nuke.hierarchy`, the same decomposition the Silhouette
+and After Effects importers use:
 
-* the camera layer uses an affine (translate/rotate/scale) approximation of
-  the camera solve, so it does not fully stabilise a shot with perspective;
-* frames with missing camera or pelvis data are not held, so shapes can jump
-  on those frames.
+* the camera is the full homography, perspective included, not an affine
+  approximation;
+* a frame with a failed camera solve, missing hips or a missing bone holds the
+  last good value, so shapes never jump.
 
-The plate positions of the shapes are still correct. The Silhouette and
-After Effects importers already use the exact camera and hold missing data,
-through `rotobot_nuke.hierarchy`. Moving this importer onto that code is
-planned.
+Rendered in Nuke 16 against the flat import, the mattes agree to within a pixel
+(Bezier exactly; B-spline passes through every point and differs by up to a
+pixel between them, more under extreme perspective). If a hierarchy ever fails
+to recompose the JSON to within 0.05 px, the import falls back to flat and says
+so in the Script Editor.
 
 ### Undersampling (RDP keyframe reduction)
 

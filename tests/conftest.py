@@ -62,6 +62,11 @@ class _Transform:
         # Rotation axes X=0, Y=1, Z=2 (real AnimCTransform shape).
         self._rotation = [_KnobFloat(), _KnobFloat(), _KnobFloat()]
         self._scale = [_KnobFloat(1.0), _KnobFloat(1.0)]
+        # 4x4 extra matrix, row-major (element 4i+j), identity by default.
+        self._extra = [[_KnobFloat(1.0 if i == j else 0.0) for j in range(4)] for i in range(4)]
+
+    def getExtraMatrixAnimCurve(self, i, j):
+        return self._extra[i][j]
 
     def getTranslationAnimCurve(self, index):
         return self._translation.getTranslationAnimCurve(index)
