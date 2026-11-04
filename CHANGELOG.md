@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-10-30
+
+### Fixed
+- **A part that leaves the frame is hidden until it comes back.** When
+  fingers (or any part) go out of frame mid-shot, the JSON has no entry for
+  those frames, and the importer only keyed visibility on the frames it
+  did have. Nuke holds a visibility key until the next one, so the shape
+  stayed on through the gap, drifting between its last and next keys. Every
+  missing frame is now keyed hidden, in both legacy and hierarchical
+  imports. Undersampled imports are unaffected: undersampling drops
+  keyframes but keeps the visibility record, so a thinned-out frame stays
+  visible.
+- Curves cached by an earlier version are rebuilt.
+
 ## [0.5.0] — 2026-10-29
 
 ### Added
