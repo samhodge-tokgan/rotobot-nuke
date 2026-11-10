@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-11-10
+
 ### Fixed
 - **Imported shapes draw motion blur.** A new Roto node blurs nothing: its
   motion blur mode is "shape" and every shape's own motion blur is off. Every
