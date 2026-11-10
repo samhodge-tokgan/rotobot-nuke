@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Imported shapes draw motion blur.** A new Roto node blurs nothing: its
+  motion blur mode is "shape" and every shape's own motion blur is off. Every
+  import (legacy, hierarchical and cached) now sets the Roto to global motion
+  blur with 16 samples and a 0.5-frame centred shutter (global mode with the
+  default 1 sample draws none). The shapes sit at mid-exposure on each frame,
+  so a 180-degree centred shutter matches the plate. Set the mode back to
+  "shape" to turn it off.
+
 ## [0.5.1] — 2026-10-30
 
 ### Fixed

@@ -13,7 +13,7 @@ jobs:
   # on PRs, but nothing re-ran them for the tag, and `build` did not depend on
   # them. Cheap insurance against tagging the wrong commit.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest (26.04) has no Python 3.9
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +33,7 @@ jobs:
 
   build:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest (26.04) has no Python 3.9
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -71,7 +71,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # ubuntu-latest (26.04) has no Python 3.9
     # Dry-run tags (vX.Y.Z-rc*) build but do NOT publish — gives you a
     # chance to inspect the sdist contents on the Actions artefact tab
     # before pushing a real tag.

@@ -436,6 +436,32 @@ def _set_project_frame_range(doc: LozengeDoc) -> None:
     root["first_frame"].setValue(1 + offset)
 
 
+#: Roto knobs that turn on shape motion blur for every shape, set on every import.
+#: The shapes sit where the part is at mid-exposure on each frame and every knot
+#: is keyed, so Nuke can draw the smear itself; a new Roto node draws none (its
+#: motion blur mode is "shape" and every shape's own motion blur is off).
+#: "global" mode blurs all shapes from one set of knobs; with its default of 1
+#: sample it draws no blur (measured in Nuke 16.0v8), so samples are set too.
+#: 0.5 frames centred = a 180-degree shutter around the frame's own key.
+#: Set the mode back to "shape" to turn it off.
+MOTION_BLUR_KNOBS = (
+    ("motionblur_mode", "global"),
+    ("global_motionblur", 16),
+    ("global_motionblur_shutter", 0.5),
+    ("global_motionblur_shutter_offset_type", "centred"),
+)
+
+
+def enable_shape_motion_blur(roto) -> None:
+    """Turn on shape motion blur for every shape in ``roto`` (:data:`MOTION_BLUR_KNOBS`).
+    A Nuke without one of these knobs keeps its default for it."""
+    for name, value in MOTION_BLUR_KNOBS:
+        try:
+            roto[name].setValue(value)
+        except (KeyError, NameError, AttributeError, ValueError, TypeError):
+            pass
+
+
 def _label_roto(roto, doc: LozengeDoc, hierarchical: bool = False) -> None:
     """Set the Roto node's label knob."""
     people = sorted({k.split(":")[0] for k in doc.objects.keys()})
@@ -444,8 +470,11 @@ def _label_roto(roto, doc: LozengeDoc, hierarchical: bool = False) -> None:
         "Tokgan JSON Import\n"
         f"Schema: {doc.schema_version}\n"
         f"People: {len(people)}\n"
+        "Shape motion blur: on\n"
         f"Mode: {mode}"
     )
+    # Every build path (legacy, hierarchical, cached) labels the node once.
+    enable_shape_motion_blur(roto)
 
 
 # ---------------------------------------------------------------------------
